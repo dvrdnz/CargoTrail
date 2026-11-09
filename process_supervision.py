@@ -384,12 +384,15 @@ class _WindowsNativeApi:
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+    JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     WAIT_OBJECT_0 = 0
     WAIT_TIMEOUT = 258
     WAIT_FAILED = 0xFFFFFFFF
     INFINITE = 0xFFFFFFFF
     STILL_ACTIVE = 259
     ERROR_INSUFFICIENT_BUFFER = 122
+    ERROR_MORE_DATA = 234
 
     def __init__(self) -> None:
         if os.name != "nt":
@@ -487,6 +490,10 @@ class _WindowsNativeApi:
         k.ResumeThread.restype = w.DWORD
         k.QueryInformationJobObject.argtypes = [w.HANDLE, w.INT, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
         k.QueryInformationJobObject.restype = w.BOOL
+        k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+        k.OpenProcess.restype = w.HANDLE
+        k.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
+        k.QueryFullProcessImageNameW.restype = w.BOOL
         k.TerminateJobObject.argtypes = [w.HANDLE, w.UINT]
         k.TerminateJobObject.restype = w.BOOL
         k.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
@@ -649,6 +656,52 @@ class _WindowsJob:
             raise self.api.error("QueryInformationJobObject(BasicAccountingInformation)")
         return int(info.ActiveProcesses)
 
+    def active_process_details(self) -> List[Dict[str, Any]]:
+        ctypes, wintypes = self.api.ctypes, self.api.wintypes
+        header_size = ctypes.sizeof(wintypes.DWORD) * 2
+        pointer_size = ctypes.sizeof(ctypes.c_size_t)
+        capacity = max(1, self.active_processes())
+        for _attempt in range(4):
+            buffer = ctypes.create_string_buffer(header_size + capacity * pointer_size)
+            returned = wintypes.DWORD(0)
+            ok = self.api.kernel32.QueryInformationJobObject(
+                self.handle, self.api.JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+                buffer, ctypes.sizeof(buffer), ctypes.byref(returned),
+            )
+            assigned = wintypes.DWORD.from_buffer(buffer, 0).value
+            count = wintypes.DWORD.from_buffer(buffer, ctypes.sizeof(wintypes.DWORD)).value
+            if not ok:
+                error = ctypes.get_last_error()
+                if error == self.api.ERROR_MORE_DATA:
+                    capacity = max(assigned, capacity * 2)
+                    continue
+                raise self.api.error("QueryInformationJobObject(BasicProcessIdList)", error)
+            process_ids = [
+                int(ctypes.c_size_t.from_buffer(buffer, header_size + index * pointer_size).value)
+                for index in range(min(count, capacity))
+            ]
+            return [self._process_name(process_id) for process_id in process_ids]
+        raise ProcessSupervisionError("Job Object process list changed during repeated queries")
+
+    def _process_name(self, process_id: int) -> Dict[str, Any]:
+        ctypes, wintypes = self.api.ctypes, self.api.wintypes
+        handle = self.api.kernel32.OpenProcess(
+            self.api.PROCESS_QUERY_LIMITED_INFORMATION, False, process_id,
+        )
+        if not handle:
+            return {"pid": process_id, "name": "<unavailable>"}
+        try:
+            capacity = 32768
+            image = ctypes.create_unicode_buffer(capacity)
+            length = wintypes.DWORD(capacity)
+            if not self.api.kernel32.QueryFullProcessImageNameW(
+                handle, 0, image, ctypes.byref(length),
+            ):
+                return {"pid": process_id, "name": "<unavailable>"}
+            return {"pid": process_id, "name": os.path.basename(image.value)}
+        finally:
+            self.api.kernel32.CloseHandle(handle)
+
     def wait_empty(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
@@ -740,8 +793,23 @@ class _WindowsJob:
             try:
                 if self.wait_empty(grace_seconds):
                     active = 0
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.warning(
+                    "Windows Job Object drain check failed after leader exit: pid=%s error=%s",
+                    process.pid, exc,
+                )
+        if active:
+            try:
+                members = self.active_process_details()
+                LOGGER.warning(
+                    "Windows Job Object still has processes after leader exit: pid=%s members=%s",
+                    process.pid, members,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Windows Job Object process enumeration failed after leader exit: pid=%s error=%s",
+                    process.pid, exc,
+                )
         if active == 0:
             return {
                 "supervision": "windows-job-object", "trigger": None,

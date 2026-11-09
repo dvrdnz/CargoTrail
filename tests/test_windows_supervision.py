@@ -155,6 +155,24 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         job.wait_empty.assert_called_once_with(2.0)
         job.terminate_tree.assert_not_called()
 
+    def test_after_leader_exit_logs_members_when_job_does_not_drain(self):
+        job = object.__new__(supervision._WindowsJob)
+        job.active_processes = mock.Mock(return_value=1)
+        job.wait_empty = mock.Mock(return_value=False)
+        job.active_process_details = mock.Mock(return_value=[{"pid": 8675, "name": "rustc.exe"}])
+        job.terminate_tree = mock.Mock(return_value={"trigger": "orphaned-descendants"})
+        process = FakeProcess()
+        process.returncode = 0
+
+        with self.assertLogs(supervision.LOGGER, level="WARNING") as captured:
+            tree = job.after_leader_exit(process, 2.0)
+
+        self.assertIn("'pid': 8675", "\n".join(captured.output))
+        self.assertIn("rustc.exe", "\n".join(captured.output))
+        self.assertEqual(tree["trigger"], "orphaned-descendants")
+        job.active_process_details.assert_called_once_with()
+        job.terminate_tree.assert_called_once_with(process, 2.0, "orphaned-descendants")
+
     def test_createprocess_failure_is_structured_without_process_handles(self):
         events = []
         job = FakeJob(events)
