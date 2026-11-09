@@ -139,6 +139,22 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         self.assertTrue(startup["job_assigned"])
         self.assertTrue(startup["thread_resumed"])
 
+    def test_after_leader_exit_allows_job_children_to_finish_naturally(self):
+        job = object.__new__(supervision._WindowsJob)
+        job.active_processes = mock.Mock(return_value=1)
+        job.wait_empty = mock.Mock(return_value=True)
+        job.terminate_tree = mock.Mock()
+        process = FakeProcess()
+        process.returncode = 0
+
+        tree = job.after_leader_exit(process, 2.0)
+
+        self.assertFalse(tree["descendants_detected"])
+        self.assertTrue(tree["cleanup_complete"])
+        self.assertTrue(tree["job_empty"])
+        job.wait_empty.assert_called_once_with(2.0)
+        job.terminate_tree.assert_not_called()
+
     def test_createprocess_failure_is_structured_without_process_handles(self):
         events = []
         job = FakeJob(events)

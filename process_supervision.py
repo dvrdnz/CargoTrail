@@ -736,6 +736,12 @@ class _WindowsJob:
                 "root_process_exited": process.returncode is not None, "job_empty": False,
                 "cleanup_verified": False, "errors": [str(exc)],
             }
+        if active:
+            try:
+                if self.wait_empty(grace_seconds):
+                    active = 0
+            except Exception:
+                pass
         if active == 0:
             return {
                 "supervision": "windows-job-object", "trigger": None,

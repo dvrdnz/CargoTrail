@@ -24,7 +24,7 @@ import tempfile
 import time
 from datetime import date
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from artifact_inventory import (
@@ -1719,6 +1719,26 @@ def _selected_config_paths(directory: Path) -> Tuple[Optional[Path], Optional[Pa
     return None, None
 
 
+def _canonical_cargo_config_path(path: Path) -> Path:
+    absolute = Path(os.path.abspath(str(path)))
+    if os.name != "nt":
+        return absolute
+
+    import ctypes
+    from ctypes import wintypes
+
+    get_long_path_name = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+    get_long_path_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    get_long_path_name.restype = wintypes.DWORD
+    for candidate, append_name in ((absolute, False), (absolute.parent, True)):
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_long_path_name(str(candidate), buffer, len(buffer))
+        if length:
+            parent = Path(buffer.value)
+            return parent / absolute.name if append_name else parent
+    return absolute
+
+
 def _collect_cargo_configuration(
     cwd: Path,
     env: dict,
@@ -1745,7 +1765,7 @@ def _collect_cargo_configuration(
         argument_index: Optional[int] = None,
         precedence_group: str = "files",
     ) -> List[dict]:
-        canonical = Path(os.path.abspath(str(path)))
+        canonical = _canonical_cargo_config_path(path)
         key = os.path.normcase(str(canonical))
         if key in active_chain:
             issue = {"code": "cargo_config_include_cycle", "path": str(canonical), "included_by": included_by}
@@ -3118,15 +3138,20 @@ def prepare_exclusions(
 def inventory_workspace(root: Path, exclusions: List[dict]) -> dict:
     root = root.absolute()
     exclusion_paths = [
-        root if item["path"] == "." else (root / Path(item["path"])).resolve()
+        PurePosixPath(item["path"]).as_posix().rstrip("/")
         for item in exclusions if item.get("applied")
     ]
     entries: List[dict] = []
     issues: List[dict] = []
 
     def excluded(path: Path) -> bool:
-        lexical = path.absolute()
-        return any(_path_within(lexical, omit) for omit in exclusion_paths)
+        relative = path.relative_to(root).as_posix().casefold()
+        return any(
+            relative == omit.casefold()
+            or omit == "."
+            or relative.startswith(omit.casefold() + "/")
+            for omit in exclusion_paths
+        )
 
     def walk(directory: Path, expected=None, parent_fd=None, name=None, directory_record=None) -> None:
         try:

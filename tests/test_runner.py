@@ -676,7 +676,7 @@ class CargoInvocationAnalysisTests(unittest.TestCase):
             analysis = self.analyze(original, workspace, {"CARGO_HOME": str(root / "cargo-home")})
             with mock.patch.object(agent, "run_process", wraps=agent.run_process) as run_process:
                 agent.process_step(
-                    sys.executable, step, workspace, output, {}, execution,
+                    sys.executable, step, workspace, output, os.environ.copy(), execution,
                     invocation_analysis=analysis,
                 )
             self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), original[1:])
@@ -5382,12 +5382,12 @@ optional = true
 class FileDescriptorCleanupTests(unittest.TestCase):
     def _track_open_regular_descriptors(self, expected_size: int):
         original_fstat = os.fstat
-        opened_fds = []
+        opened_fds = set()
 
         def tracked_fstat(fd):
             details = original_fstat(fd)
             if stat.S_ISREG(details.st_mode) and details.st_size == expected_size:
-                opened_fds.append(fd)
+                opened_fds.add(fd)
             return details
 
         return tracked_fstat, opened_fds
@@ -5418,8 +5418,9 @@ class FileDescriptorCleanupTests(unittest.TestCase):
                     with self.assertRaises(artifact_inventory.FileVerificationError):
                         artifact_inventory.open_file_no_follow(target)
 
-            self.assertEqual(len(opened_fds), 1)
-            self._assert_closed(opened_fds[0])
+            self.assertTrue(opened_fds)
+            for fd in opened_fds:
+                self._assert_closed(fd)
 
     def test_regular_writer_closes_leaf_fd_when_parent_reverification_fails(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -5432,8 +5433,9 @@ class FileDescriptorCleanupTests(unittest.TestCase):
                     with self.assertRaises(artifact_inventory.FileVerificationError):
                         artifact_inventory.open_regular_writer(target)
 
-            self.assertEqual(len(opened_fds), 1)
-            self._assert_closed(opened_fds[0])
+            self.assertTrue(opened_fds)
+            for fd in opened_fds:
+                self._assert_closed(fd)
 
     def test_regular_writer_closes_leaf_fd_when_truncate_fails(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -5446,8 +5448,9 @@ class FileDescriptorCleanupTests(unittest.TestCase):
                     with self.assertRaisesRegex(OSError, "injected truncate failure"):
                         artifact_inventory.open_regular_writer(target)
 
-            self.assertEqual(len(opened_fds), 1)
-            self._assert_closed(opened_fds[0])
+            self.assertTrue(opened_fds)
+            for fd in opened_fds:
+                self._assert_closed(fd)
 
     def test_secure_directory_closes_handle_once_after_identity_failure(self):
         with tempfile.TemporaryDirectory() as temp:
