@@ -1,0 +1,41 @@
+# Python bytecode and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build and packaging output
+build/
+dist/
+release/
+*.egg-info/
+*.manifest
+*.spec.bak
+
+# Rust build output
+target/
+
+# Runtime evidence and temporary files
+evidence/
+*.log
+*.integrity.json
+*.writing
+*.partial
+*.tmp
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

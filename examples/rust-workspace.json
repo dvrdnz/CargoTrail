@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "id": "rust-workspace-validation",
+    "version": 1,
+    "description": "Standard Rust workspace validation"
+  },
+  "workspace_root": ".",
+  "execution": {
+    "cargo_executable": "cargo",
+    "continue_on_error": true,
+    "default_timeout_seconds": null,
+    "termination_grace_seconds": 5,
+    "environment": {},
+    "unset_environment": []
+  },
+  "steps": [
+    {
+      "id": "fmt",
+      "enabled": true,
+      "args": ["fmt", "--all", "--", "--check"],
+      "parser": "text",
+      "cwd": "."
+    },
+    {
+      "id": "clippy",
+      "enabled": true,
+      "args": [
+        "clippy", "--locked", "--workspace", "--all-features", "--all-targets",
+        "--message-format=json", "--", "-D", "warnings"
+      ],
+      "parser": "cargo-json",
+      "evidence_requirements": {
+        "require_valid_json_events": true,
+        "require_build_finished": true
+      },
+      "cwd": ".",
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "test",
+      "enabled": true,
+      "args": [
+        "test", "--locked", "--workspace", "--all-targets", "--message-format=json"
+      ],
+      "parser": "cargo-json+libtest",
+      "evidence_requirements": {
+        "require_valid_json_events": true,
+        "require_build_finished": true,
+        "require_test_summary": true,
+        "allow_zero_tests": false
+      },
+      "cwd": ".",
+      "timeout_seconds": 3600
+    },
+    {
+      "id": "build-release",
+      "enabled": true,
+      "args": [
+        "build", "--release", "--locked", "--workspace", "--message-format=json"
+      ],
+      "parser": "cargo-json",
+      "evidence_requirements": {
+        "require_valid_json_events": true,
+        "require_build_finished": true
+      },
+      "cwd": ".",
+      "timeout_seconds": 3600
+    }
+  ]
+}
