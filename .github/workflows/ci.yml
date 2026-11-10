@@ -73,10 +73,9 @@ jobs:
   windows-linker-diagnostics:
     name: Windows Cargo linker diagnostic / ${{ matrix.linker }}
     runs-on: windows-2025
-    # MSVC is an investigative lane while the vctip.exe behavior is being
-    # characterized. Its actual result remains visible in the job and artifact,
-    # while keeping the LLD comparison result independently visible.
-    continue-on-error: ${{ matrix.linker == 'msvc' }}
+    # The MSVC lane is an investigative, non-gating control while the
+    # vctip.exe behavior is characterized. Its test exit code and full log are
+    # retained as artifacts; the LLD lane remains gating.
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +132,7 @@ jobs:
           Get-Content -LiteralPath windows-diagnostics/toolchain.txt
           Get-Content -LiteralPath windows-diagnostics/vctip-before.json
       - name: Run the three previously affected real-Cargo tests
+        continue-on-error: ${{ matrix.linker == 'msvc' }}
         shell: pwsh
         run: |
           $tests = @(
@@ -144,6 +144,10 @@ jobs:
             Tee-Object -FilePath windows-diagnostics/cargo-integration-tests.log
           $testExit = $LASTEXITCODE
           "test_exit_code=$testExit" | Add-Content windows-diagnostics/test-exit-code.txt
+          if ($testExit -ne 0 -and $env:CARGOTRAIL_WINDOWS_LINKER -eq "msvc") {
+            "MSVC diagnostic returned exit code $testExit. This lane is intentionally non-gating while the vctip.exe behavior is characterized; inspect the uploaded cargo-integration-tests.log and process snapshots." |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
           exit $testExit
       - name: Record vctip state after the tests
         if: always()

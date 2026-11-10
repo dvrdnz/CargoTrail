@@ -3769,7 +3769,7 @@ class RunnerUnitTests(unittest.TestCase):
         self.assertEqual(getsid.call_args_list, [mock.call(101), mock.call(102), mock.call(103)])
         self.assertEqual(
             run.call_args.args[0],
-            ["/usr/bin/ps", "-U", str(os.getuid()), "-o", "pid=,pgid=,stat="],
+            ["/usr/bin/ps", "-U", str(os.getuid()), "-x", "-o", "pid=,pgid=,stat="],
         )
 
     @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
@@ -3800,6 +3800,35 @@ class RunnerUnitTests(unittest.TestCase):
         with mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
                 mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             self.assertIsNone(supervision._ps_session_groups(9001))
+
+    @unittest.skipIf(os.name == "nt", "POSIX process supervision is unavailable on Windows")
+    def test_posix_wait_does_not_accept_empty_snapshot_while_direct_child_is_alive(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        with mock.patch.object(
+            supervision, "_posix_session_snapshot", return_value=(set(), True),
+        ):
+            self.assertFalse(supervision._wait_posix_session_empty(43210, process, 0))
+        process.poll.assert_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX process supervision is unavailable on Windows")
+    def test_posix_cleanup_signals_initial_group_when_snapshot_is_empty(self):
+        process = mock.Mock()
+        process.pid = 43210
+        process.wait.return_value = 0
+        empty_complete = (set(), True)
+        with mock.patch.object(
+            supervision, "_posix_session_snapshot", side_effect=[empty_complete, empty_complete],
+        ), mock.patch.object(
+            supervision, "_send_posix_session_signal", return_value=[],
+        ) as send_signal, mock.patch.object(
+            supervision, "_wait_posix_session_empty", return_value=True,
+        ):
+            result = supervision._posix_cleanup(process, 43210, 0.1, "timeout")
+        send_signal.assert_called_once_with(43210, signal.SIGTERM)
+        self.assertTrue(result["term_signal_sent"])
+        self.assertTrue(result["cleanup_complete"])
+        process.wait.assert_called_once()
 
     @unittest.skipIf(os.name == "nt", "POSIX killpg fallback is unavailable on Windows")
     def test_posix_session_fallback_is_explicitly_unverified(self):

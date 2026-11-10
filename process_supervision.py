@@ -133,13 +133,15 @@ def _ps_session_groups(session_id: int) -> Optional[set]:
 
     macOS's ``ps`` accepts the ``sess`` keyword but reports zero for it; it
     therefore cannot be used to identify POSIX sessions there. Enumerate PIDs
-    and process groups owned by the current real UID, then obtain each session
-    ID via ``getsid(2)`` (exposed by :func:`os.getsid`). Restricting the query
-    avoids unrelated system and other-user processes whose session metadata
-    the runner is not permitted to inspect. A process that exits during the
-    scan is a normal race and is ignored. Any other lookup failure makes the
-    snapshot incomplete: silently omitting a process would turn an unverified
-    cleanup into a false success.
+    and process groups owned by the current real UID, including processes
+    without a controlling terminal, then obtain each session ID via
+    ``getsid(2)`` (exposed by :func:`os.getsid`). The ``-x`` selection is
+    important for CI-launched processes, which commonly have no controlling
+    terminal. Restricting the query avoids unrelated system and other-user
+    processes whose session metadata the runner is not permitted to inspect.
+    A process that exits during the scan is a normal race and is ignored. Any
+    other lookup failure makes the snapshot incomplete: silently omitting a
+    process would turn an unverified cleanup into a false success.
     """
     ps = shutil.which("ps")
     get_session_id = getattr(os, "getsid", None)
@@ -147,7 +149,12 @@ def _ps_session_groups(session_id: int) -> Optional[set]:
         return None
     try:
         completed = subprocess.run(
-            [ps, "-U", str(os.getuid()), "-o", "pid=,pgid=,stat="],
+            # macOS ps otherwise defaults to processes with controlling
+            # terminals. CI-launched Cargo descendants are commonly detached
+            # from a terminal, so -x is required in addition to the real-UID
+            # selector; without it ps can return a misleadingly complete but
+            # empty process table for the supervised session.
+            [ps, "-U", str(os.getuid()), "-x", "-o", "pid=,pgid=,stat="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -247,11 +254,14 @@ def _wait_posix_session_empty(session_id: int, process: subprocess.Popen, timeou
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         try:
-            process.poll()
+            child_return_code = process.poll()
         except OSError:
-            pass
+            child_return_code = None
         groups, enumeration_complete = _posix_session_snapshot(session_id)
-        if not groups and enumeration_complete:
+        # An empty inventory is not sufficient while the direct child is still
+        # alive. This also protects against a platform process query that
+        # silently omits terminal-less children.
+        if not groups and enumeration_complete and child_return_code is not None:
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -319,16 +329,10 @@ def _posix_cleanup(
         result["errors"].append(
             "session-wide process enumeration unavailable; only the initial process group can be supervised"
         )
-    if not current_groups:
-        try:
-            process.wait(timeout=max(0.1, grace_seconds))
-        except subprocess.TimeoutExpired:
-            result["cleanup_complete"] = False
-            result["errors"].append("direct child did not exit after its session disappeared")
-        result["cleanup_complete"] = bool(result["cleanup_complete"] and enumeration_complete)
-        result["active_members_after_cleanup"] = 0 if result["cleanup_complete"] else None
-        return result
-
+    # Do not return early merely because the snapshot is empty. The initial
+    # process group is known from start_new_session=True and must still receive
+    # SIGTERM; an empty/incomplete OS inventory is not evidence that the direct
+    # child or its descendants have exited.
     result["process_groups_signalled"] = sorted(current_groups | {session_id})
     term_errors = _send_posix_session_signal(session_id, signal.SIGTERM)
     result["term_signal_sent"] = not term_errors
@@ -350,7 +354,11 @@ def _posix_cleanup(
         kill_errors = []
         while True:
             current_groups, current_enumeration_complete = _posix_session_snapshot(session_id)
-            if not current_groups and current_enumeration_complete:
+            try:
+                child_return_code = process.poll()
+            except OSError:
+                child_return_code = None
+            if not current_groups and current_enumeration_complete and child_return_code is not None:
                 break
             # Even with an incomplete snapshot, keep trying the original
             # process group. This is best effort only; the final result remains
