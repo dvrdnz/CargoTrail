@@ -1722,7 +1722,14 @@ def _selected_config_paths(directory: Path) -> Tuple[Optional[Path], Optional[Pa
 def _canonical_cargo_config_path(path: Path) -> Path:
     absolute = Path(os.path.abspath(str(path)))
     if os.name != "nt":
-        return absolute
+        # macOS commonly exposes temporary directories through aliases such
+        # as /var -> /private/var. Resolve the parent, but deliberately retain
+        # the final path component: a symlinked config file must still be
+        # detected as a symlink by the no-follow file checks below.
+        try:
+            return absolute.parent.resolve(strict=False) / absolute.name
+        except (OSError, RuntimeError):
+            return absolute
 
     import ctypes
     from ctypes import wintypes

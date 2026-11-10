@@ -139,6 +139,123 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         self.assertTrue(startup["job_assigned"])
         self.assertTrue(startup["thread_resumed"])
 
+    def test_process_diagnostics_capture_image_parent_creation_and_handle_state(self):
+        class FakeFileTime(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", ctypes.c_uint32),
+                ("dwHighDateTime", ctypes.c_uint32),
+            ]
+
+        class FakeKernel32:
+            def __init__(self):
+                self.open_process_access = []
+
+            def OpenProcess(self, desired_access, *_args):
+                self.open_process_access.append(desired_access)
+                return 1
+
+            def WaitForSingleObject(self, _handle, _timeout):
+                return supervision._WindowsNativeApi.WAIT_TIMEOUT
+
+            def QueryFullProcessImageNameW(self, _handle, _flags, image, length):
+                image.value = r"C:\Program Files\Microsoft Visual Studio\VC\Tools\vctip.exe"
+                length._obj.value = len(image.value)
+                return True
+
+            def GetProcessTimes(self, _handle, created, _exited, _kernel, _user):
+                created._obj.dwLowDateTime = 0
+                created._obj.dwHighDateTime = 0
+                return True
+
+            def CloseHandle(self, _handle):
+                return True
+
+        fake_api = SimpleNamespace(
+            ctypes=ctypes,
+            wintypes=SimpleNamespace(DWORD=ctypes.c_uint32),
+            kernel32=FakeKernel32(),
+            PROCESS_QUERY_LIMITED_INFORMATION=0x1000,
+            SYNCHRONIZE=0x00100000,
+            FILETIME=FakeFileTime,
+            WAIT_TIMEOUT=supervision._WindowsNativeApi.WAIT_TIMEOUT,
+            WAIT_OBJECT_0=supervision._WindowsNativeApi.WAIT_OBJECT_0,
+        )
+        job = object.__new__(supervision._WindowsJob)
+        job.api = fake_api
+
+        details = job._process_name(8675, 4321, "2026-11-10T10:00:03.000Z")
+
+        self.assertEqual(details["pid"], 8675)
+        self.assertEqual(details["parent_pid"], 4321)
+        self.assertEqual(details["name"], "vctip.exe")
+        self.assertEqual(
+            details["image_path"],
+            r"C:\Program Files\Microsoft Visual Studio\VC\Tools\vctip.exe",
+        )
+        self.assertEqual(details["process_created_at_utc"], "1601-01-01T00:00:00.000Z")
+        self.assertEqual(details["observed_at_utc"], "2026-11-10T10:00:03.000Z")
+        self.assertEqual(details["process_handle_state"], "active")
+        self.assertEqual(details["job_membership"], "active")
+        self.assertEqual(
+            fake_api.kernel32.open_process_access,
+            [fake_api.PROCESS_QUERY_LIMITED_INFORMATION | supervision._WindowsNativeApi.SYNCHRONIZE],
+        )
+
+    def test_process_diagnostics_fall_back_when_synchronize_access_is_denied(self):
+        class FakeFileTime(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", ctypes.c_uint32),
+                ("dwHighDateTime", ctypes.c_uint32),
+            ]
+
+        class FakeKernel32:
+            def __init__(self):
+                self.open_process_access = []
+
+            def OpenProcess(self, desired_access, *_args):
+                self.open_process_access.append(desired_access)
+                return 0 if len(self.open_process_access) == 1 else 1
+
+            def WaitForSingleObject(self, *_args):
+                raise AssertionError("wait must not be attempted without SYNCHRONIZE access")
+
+            def QueryFullProcessImageNameW(self, _handle, _flags, image, length):
+                image.value = r"C:\Program Files\Microsoft Visual Studio\VC\Tools\vctip.exe"
+                length._obj.value = len(image.value)
+                return True
+
+            def GetProcessTimes(self, _handle, created, _exited, _kernel, _user):
+                created._obj.dwLowDateTime = 0
+                created._obj.dwHighDateTime = 0
+                return True
+
+            def CloseHandle(self, _handle):
+                return True
+
+        fake_kernel32 = FakeKernel32()
+        fake_api = SimpleNamespace(
+            ctypes=ctypes,
+            wintypes=SimpleNamespace(DWORD=ctypes.c_uint32),
+            kernel32=fake_kernel32,
+            PROCESS_QUERY_LIMITED_INFORMATION=0x1000,
+            SYNCHRONIZE=0x00100000,
+            FILETIME=FakeFileTime,
+            WAIT_TIMEOUT=supervision._WindowsNativeApi.WAIT_TIMEOUT,
+            WAIT_OBJECT_0=supervision._WindowsNativeApi.WAIT_OBJECT_0,
+        )
+        job = object.__new__(supervision._WindowsJob)
+        job.api = fake_api
+
+        details = job._process_name(8675, 4321, "2026-11-10T10:00:03.000Z")
+
+        self.assertEqual(
+            fake_kernel32.open_process_access,
+            [0x1000 | 0x00100000, 0x1000],
+        )
+        self.assertEqual(details["name"], "vctip.exe")
+        self.assertIsNotNone(details["process_created_at_utc"])
+        self.assertEqual(details["process_handle_state"], "unavailable")
+
     def test_after_leader_exit_allows_job_children_to_finish_naturally(self):
         job = object.__new__(supervision._WindowsJob)
         job.active_processes = mock.Mock(return_value=1)
@@ -154,6 +271,33 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         self.assertTrue(tree["job_empty"])
         job.wait_empty.assert_called_once_with(2.0)
         job.terminate_tree.assert_not_called()
+
+    def test_after_leader_exit_logs_full_vctip_member_diagnostics(self):
+        job = object.__new__(supervision._WindowsJob)
+        job.active_processes = mock.Mock(return_value=1)
+        job.wait_empty = mock.Mock(return_value=False)
+        member = {
+            "pid": 8675,
+            "parent_pid": 4321,
+            "name": "vctip.exe",
+            "image_path": r"C:\Program Files\Microsoft Visual Studio\VC\Tools\vctip.exe",
+            "process_created_at_utc": "2026-11-10T10:00:00.000Z",
+            "observed_at_utc": "2026-11-10T10:00:03.000Z",
+            "job_membership": "active",
+        }
+        job.active_process_details = mock.Mock(return_value=[member])
+        job.terminate_tree = mock.Mock(return_value={"trigger": "orphaned-descendants"})
+        process = FakeProcess()
+        process.returncode = 0
+
+        with self.assertLogs(supervision.LOGGER, level="WARNING") as captured:
+            tree = job.after_leader_exit(process, 2.0)
+
+        diagnostic_log = "\n".join(captured.output)
+        for expected in ("vctip.exe", "8675", "4321", "image_path", "process_created_at_utc", "job_membership"):
+            self.assertIn(expected, diagnostic_log)
+        self.assertEqual(tree["trigger"], "orphaned-descendants")
+        job.active_process_details.assert_called_once_with()
 
     def test_after_leader_exit_logs_members_when_job_does_not_drain(self):
         job = object.__new__(supervision._WindowsJob)

@@ -1,0 +1,25 @@
+{
+  "name": "CargoTrail",
+  "image": "mcr.microsoft.com/devcontainers/python:2-3.14-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "minimal",
+      "components": "rust-analyzer,rust-src,rustfmt,clippy"
+    }
+  },
+  "containerEnv": {
+    "CARGO_INTEGRATION_REQUIRED": "1"
+  },
+  "postCreateCommand": "python --version && rustc --version && cargo --version && rustfmt --version && cargo clippy --version",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}

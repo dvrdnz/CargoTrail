@@ -60,6 +60,27 @@ def _pid_is_running(pid):
             return code.value == 259  # STILL_ACTIVE
         finally:
             kernel.CloseHandle(handle)
+    if sys.platform == "darwin":
+        # kill(pid, 0) also succeeds for zombies on macOS. A zombie is no
+        # longer executing and must not be reported as a surviving process.
+        try:
+            completed = subprocess.run(
+                ["ps", "-p", str(int(pid)), "-o", "stat="],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True  # Unable to prove that the process has exited.
+        if completed.returncode != 0:
+            return True  # A failed probe is not proof that the process has exited.
+        state = completed.stdout.strip().split()
+        if not state:
+            return False
+        return not state[0].startswith(("Z", "X"))
     try:
         os.kill(pid, 0)
         return True
@@ -684,6 +705,30 @@ class CargoInvocationAnalysisTests(unittest.TestCase):
 
 
 class RunnerUnitTests(unittest.TestCase):
+    def test_darwin_pid_probe_treats_zombie_as_exited(self):
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(supervision.subprocess, "run") as run:
+            run.return_value = type("Completed", (), {"returncode": 0, "stdout": "Z+\n"})()
+            self.assertFalse(_pid_is_running(43210))
+            self.assertEqual(run.call_args.args[0], ["ps", "-p", "43210", "-o", "stat="])
+
+    def test_darwin_pid_probe_treats_live_state_as_running(self):
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(supervision.subprocess, "run") as run:
+            run.return_value = type("Completed", (), {"returncode": 0, "stdout": "S+\n"})()
+            self.assertTrue(_pid_is_running(43210))
+
+    def test_darwin_pid_probe_fails_closed_when_ps_cannot_verify(self):
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(supervision.subprocess, "run", side_effect=OSError("ps unavailable")):
+            self.assertTrue(_pid_is_running(43210))
+
+    def test_darwin_pid_probe_fails_closed_on_ps_error(self):
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(supervision.subprocess, "run") as run:
+            run.return_value = type("Completed", (), {"returncode": 1, "stdout": ""})()
+            self.assertTrue(_pid_is_running(43210))
+
     def test_cli_version_option_reports_current_release_without_config(self):
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), "--version"],
@@ -3697,18 +3742,54 @@ class RunnerUnitTests(unittest.TestCase):
                         process.kill()
                         process.wait(timeout=5)
 
-    def test_ps_fallback_enumerates_session_process_groups(self):
+    @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
+    def test_ps_fallback_uses_getsid_instead_of_ps_sess_field(self):
         from types import SimpleNamespace
-        output = """101 1 101 9001 Ss
-102 101 102 9001 S
-103 102 103 9002 S
-104 1 104 9001 Z
+        # macOS prints zero for ps's sess field; getsid(pid) is the reliable
+        # per-process session query. The fourth process is a zombie and must
+        # not be included even though it belongs to the target session.
+        output = """101 101 Ss
+102 102 S
+103 103 S
+104 104 Z
 """
-        with mock.patch.object(supervision, "_procfs_session_groups", return_value=None), \
-                mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
-                mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=output)):
+        session_ids = {101: 9001, 102: 9001, 103: 9002, 104: 9001}
+        with mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
+                mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=output)) as run, \
+                mock.patch.object(supervision.os, "getsid", side_effect=lambda pid: session_ids[pid]) as getsid:
             groups = supervision._ps_session_groups(9001)
         self.assertEqual(groups, {101, 102})
+        self.assertEqual(getsid.call_args_list, [mock.call(101), mock.call(102), mock.call(103)])
+        self.assertEqual(run.call_args.args[0][-1], "pid=,pgid=,stat=")
+
+    @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
+    def test_ps_fallback_marks_permission_errors_as_incomplete(self):
+        from types import SimpleNamespace
+        output = """101 101 Ss
+102 102 S
+"""
+        with mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
+                mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=output)), \
+                mock.patch.object(supervision.os, "getsid", side_effect=[9001, PermissionError("denied")]):
+            self.assertIsNone(supervision._ps_session_groups(9001))
+
+    @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
+    def test_ps_fallback_ignores_processes_that_exit_during_snapshot(self):
+        from types import SimpleNamespace
+        output = """101 101 Ss
+102 102 S
+"""
+        with mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
+                mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=output)), \
+                mock.patch.object(supervision.os, "getsid", side_effect=[9001, ProcessLookupError()]):
+            self.assertEqual(supervision._ps_session_groups(9001), {101})
+
+    @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
+    def test_ps_fallback_rejects_an_empty_process_table(self):
+        from types import SimpleNamespace
+        with mock.patch.object(supervision.shutil, "which", return_value="/usr/bin/ps"), \
+                mock.patch.object(supervision.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+            self.assertIsNone(supervision._ps_session_groups(9001))
 
     @unittest.skipIf(os.name == "nt", "POSIX killpg fallback is unavailable on Windows")
     def test_posix_session_fallback_is_explicitly_unverified(self):
@@ -3916,7 +3997,7 @@ class RunnerUnitTests(unittest.TestCase):
                 for step_id in ("fmt", "check", "test"):
                     self.assertTrue(archive.extractfile(output.name + "/" + step_id + "/summary.json").read())
             self.assertNotEqual(str(sidecar_path), str(archive_path))
-            self.assertEqual(sidecar_path.parent, output.parent)
+            self.assertEqual(sidecar_path.parent, output.resolve().parent)
 
     def test_fake_cargo_canaries_are_redacted_from_evidence_and_archive(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -4831,6 +4912,27 @@ class RunnerUnitTests(unittest.TestCase):
             )
             self.assertNotEqual(without_inventory["status"], "present")
             self.assertIsNone(without_inventory["sha256"])
+
+    def test_cargo_config_path_resolves_symlinked_parent_but_not_final_component(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            real_parent = base / "real"
+            real_parent.mkdir()
+            alias_parent = base / "alias"
+            try:
+                alias_parent.symlink_to(real_parent, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlink creation is unavailable on this platform")
+            config_path = alias_parent / "config.toml"
+            config_path.write_text("[build]\ntarget = 'x'\n", encoding="utf-8")
+            canonical = provenance._canonical_cargo_config_path(config_path)
+            self.assertEqual(canonical, real_parent.resolve() / "config.toml")
+
+            link_path = alias_parent / "linked-config.toml"
+            link_path.symlink_to(config_path)
+            canonical_link = provenance._canonical_cargo_config_path(link_path)
+            self.assertEqual(canonical_link, real_parent.resolve() / "linked-config.toml")
+            self.assertTrue(canonical_link.is_symlink())
 
     def test_cargo_config_layers_are_fingerprinted_and_secret_environment_is_redacted(self):
         with tempfile.TemporaryDirectory() as temp:

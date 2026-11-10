@@ -8,7 +8,7 @@ Each command starts in a new session. The supervisor discovers and signals proce
 
 On timeout, interruption, termination signal, or supervisor error, the agent sends `SIGTERM`, waits through the configured grace period, then sends `SIGKILL` to remaining groups. It rediscovers members during forced cleanup, reaps the direct child, and verifies that no live session members remain.
 
-On macOS and POSIX systems without Linux `/proc`, session members are enumerated with the local `ps` command. If enumeration is unavailable, the agent may attempt the original process group as a best-effort cleanup, but marks enumeration incomplete. Incomplete visibility cannot be reported as successful cleanup.
+On macOS and POSIX systems without Linux `/proc`, the local `ps` command supplies process IDs, process-group IDs, and states; the supervisor obtains each live process's session ID separately with `getsid(2)`. It does not use `ps`'s `sess` field as a session identifier. A process that exits during the scan is ignored as a normal race. Permission or parsing failures make the inventory incomplete. If enumeration is unavailable, the agent may attempt the original process group as a best-effort cleanup, but marks enumeration incomplete. Incomplete visibility cannot be reported as successful cleanup.
 
 A descendant that deliberately calls `setsid()` leaves the session controlled by the runner. This is a documented boundary, not a sandbox guarantee.
 
@@ -25,6 +25,10 @@ Each command receives its own Windows Job Object configured with `JOB_OBJECT_LIM
 7. Closing the Job Object handle is an additional kill-on-close safeguard.
 
 If Job assignment is unavailable, the runner refuses to start an unsupervised process. It does not fall back to supervising only the Cargo parent.
+
+The ordinary Windows real-Cargo test suite selects LLVM `lld-link` explicitly as its control linker through Cargo's target-specific linker environment variable. A separate `windows-linker-diagnostics` CI matrix runs the three previously affected real-Cargo tests with both the native MSVC default linker and `lld-link`. The MSVC lane is currently non-gating while the `vctip.exe` behavior is characterized; its result and diagnostic artifact remain visible. The LLD lane is gating. Both variants use the same tests and the same strict Job Object supervision.
+
+When a Job Object remains non-empty after the Cargo leader exits and the drain window expires, the supervisor logs every active member with its PID, parent PID when available, executable basename and full image path, process creation timestamp in UTC when available, observation timestamp, and active Job Object membership. Parent PID and process creation time are best-effort diagnostic metadata only. A zero-time process-handle wait reports whether the process handle is still active or signaled when `SYNCHRONIZE` access is granted; otherwise the state is recorded as unavailable. This is not a scheduler run/wait state. None of these fields affects the authoritative Job Object process list or cleanup decision. The Windows CI diagnostic job also archives toolchain discovery and before/after `vctip.exe` process snapshots. None of this exempts a process from Job Object supervision or changes the production linker selection.
 
 ## Status model
 

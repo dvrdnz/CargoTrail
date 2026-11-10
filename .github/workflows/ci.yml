@@ -27,6 +27,7 @@ jobs:
     env:
       CARGO_INTEGRATION_REQUIRED: "1"
       CARGO_NET_OFFLINE: "true"
+      CARGOTRAIL_WINDOWS_LINKER: lld
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v7
@@ -56,6 +57,7 @@ jobs:
     env:
       CARGO_INTEGRATION_REQUIRED: "1"
       CARGO_NET_OFFLINE: "true"
+      CARGOTRAIL_WINDOWS_LINKER: lld
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v7
@@ -67,6 +69,82 @@ jobs:
         run: python -m pip install uv==0.13.5
       - name: Run unit, process-tree, and real-Cargo integration tests on Python 3.8
         run: uv run --no-project --python 3.8 python -m unittest discover -s tests -v
+
+  windows-linker-diagnostics:
+    name: Windows Cargo linker diagnostic / ${{ matrix.linker }}
+    runs-on: windows-2025
+    # MSVC is an investigative lane while the vctip.exe behavior is being
+    # characterized. Its actual result remains visible in the job and artifact,
+    # while keeping the LLD comparison result independently visible.
+    continue-on-error: ${{ matrix.linker == 'msvc' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        linker: [msvc, lld]
+    env:
+      CARGO_INTEGRATION_REQUIRED: "1"
+      CARGO_NET_OFFLINE: "true"
+      CARGOTRAIL_WINDOWS_LINKER: ${{ matrix.linker }}
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record Windows linker and vctip environment
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path windows-diagnostics | Out-Null
+          $report = @()
+          $report += "linker_mode=$env:CARGOTRAIL_WINDOWS_LINKER"
+          $report += "python=$((python --version 2>&1 | Out-String).Trim())"
+          $report += "cargo=$((cargo --version 2>&1 | Out-String).Trim())"
+          $report += "rustc=$((rustc --version --verbose 2>&1 | Out-String).Trim())"
+          $report += "VCToolsInstallDir=$env:VCToolsInstallDir"
+          $report += "VisualStudioVersion=$env:VisualStudioVersion"
+          $report += "WindowsSDKVersion=$env:WindowsSDKVersion"
+          foreach ($tool in @("link.exe", "lld-link.exe", "vctip.exe")) {
+            $found = Get-Command $tool -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $report += "$tool=$($found.Source)" }
+            else { $report += "$tool=<not-on-PATH>" }
+          }
+          $report | Set-Content -Encoding utf8 windows-diagnostics/toolchain.txt
+          $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'vctip.exe'" |
+            Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
+          $processes | ConvertTo-Json -Depth 4 |
+            Set-Content -Encoding utf8 windows-diagnostics/vctip-before.json
+          Get-Content windows-diagnostics/toolchain.txt
+          Get-Content windows-diagnostics/vctip-before.json
+      - name: Run the three previously affected real-Cargo tests
+        shell: pwsh
+        run: |
+          $tests = @(
+            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_success_check_test_and_build",
+            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_build_detects_workspace_change_without_changing_pipeline_status",
+            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_zero_test_summary_requires_explicit_allowance"
+          )
+          & python -m unittest -v @tests 2>&1 |
+            Tee-Object -FilePath windows-diagnostics/cargo-integration-tests.log
+          $testExit = $LASTEXITCODE
+          "test_exit_code=$testExit" | Add-Content windows-diagnostics/test-exit-code.txt
+          exit $testExit
+      - name: Record vctip state after the tests
+        if: always()
+        shell: pwsh
+        run: |
+          $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'vctip.exe'" |
+            Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
+          $processes | ConvertTo-Json -Depth 4 |
+            Set-Content -Encoding utf8 windows-diagnostics/vctip-after.json
+          Get-Content windows-diagnostics/vctip-after.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-linker-${{ matrix.linker }}-diagnostics
+          path: windows-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
 
   build-binaries:
     # Runs for version tags (release) and for manual runs (dry run, nothing is published).

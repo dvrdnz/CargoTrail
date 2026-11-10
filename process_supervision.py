@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import errno
 import os
+import ntpath
+from datetime import datetime, timedelta, timezone
 import signal
 import subprocess
 import sys
@@ -126,18 +129,23 @@ def _procfs_session_groups(session_id: int) -> Optional[set]:
 
 
 def _ps_session_groups(session_id: int) -> Optional[set]:
-    """Enumerate session process groups on POSIX systems without procfs.
+    """Enumerate live process groups in a POSIX session without procfs.
 
-    macOS and several BSDs expose a stable session identifier via `ps`'s
-    `sess` output field. The command is executed outside the supervised
-    session, and only numeric process metadata is parsed.
+    macOS's ``ps`` accepts the ``sess`` keyword but reports zero for it; it
+    therefore cannot be used to identify POSIX sessions there. Enumerate PIDs
+    and process groups with ``ps`` and obtain each session ID via ``getsid(2)``
+    (exposed by :func:`os.getsid`). A process that exits during the scan is a
+    normal race and is ignored. Any other lookup failure makes the snapshot
+    incomplete: silently omitting a process would turn an unverified cleanup
+    into a false success.
     """
     ps = shutil.which("ps")
-    if not ps:
+    get_session_id = getattr(os, "getsid", None)
+    if not ps or get_session_id is None:
         return None
     try:
         completed = subprocess.run(
-            [ps, "-A", "-o", "pid=,ppid=,pgid=,sess=,stat="],
+            [ps, "-A", "-o", "pid=,pgid=,stat="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -152,20 +160,38 @@ def _ps_session_groups(session_id: int) -> Optional[set]:
         return None
     if completed.returncode != 0:
         return None
+
     groups = set()
+    saw_process_row = False
     for line in completed.stdout.splitlines():
         fields = line.split()
-        if len(fields) < 5:
+        if len(fields) < 3:
+            # A malformed process row means the inventory is not complete.
+            return None
+        saw_process_row = True
+        try:
+            pid = int(fields[0])
+            process_group = int(fields[1])
+        except ValueError:
+            return None
+        state = fields[2]
+        if state.startswith(("Z", "X")):
             continue
         try:
-            process_group = int(fields[2])
-            session = int(fields[3])
-        except ValueError:
+            process_session = get_session_id(pid)
+        except ProcessLookupError:
+            # The process exited after ps took its snapshot.
             continue
-        state = fields[4]
-        if session == session_id and not state.startswith(("Z", "X")):
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                continue
+            # EPERM and all other errors prevent proving the session is empty.
+            return None
+        if process_session == session_id:
             groups.add(process_group)
-    return groups
+    # `ps` returning an empty list is not evidence that a process table was
+    # successfully inventoried. Keep the snapshot unverified in that case.
+    return groups if saw_process_row else None
 
 
 def _posix_session_snapshot(session_id: int) -> Tuple[set, bool]:
@@ -386,6 +412,7 @@ class _WindowsNativeApi:
     JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
     JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
     WAIT_OBJECT_0 = 0
     WAIT_TIMEOUT = 258
     WAIT_FAILED = 0xFFFFFFFF
@@ -393,6 +420,7 @@ class _WindowsNativeApi:
     STILL_ACTIVE = 259
     ERROR_INSUFFICIENT_BUFFER = 122
     ERROR_MORE_DATA = 234
+    TH32CS_SNAPPROCESS = 0x00000002
 
     def __init__(self) -> None:
         if os.name != "nt":
@@ -450,6 +478,23 @@ class _WindowsNativeApi:
                 ("TotalTerminatedProcesses", wintypes.DWORD),
             ]
 
+        class FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
         class STARTUPINFOW(ctypes.Structure):
             _fields_ = [
                 ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
@@ -475,6 +520,8 @@ class _WindowsNativeApi:
 
         self.EXTENDED_LIMIT_INFORMATION = EXTENDED_LIMIT_INFORMATION
         self.BASIC_ACCOUNTING_INFORMATION = BASIC_ACCOUNTING_INFORMATION
+        self.FILETIME = FILETIME
+        self.PROCESSENTRY32W = PROCESSENTRY32W
         self.STARTUPINFOEXW = STARTUPINFOEXW
         self.PROCESS_INFORMATION = PROCESS_INFORMATION
 
@@ -494,6 +541,17 @@ class _WindowsNativeApi:
         k.OpenProcess.restype = w.HANDLE
         k.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
         k.QueryFullProcessImageNameW.restype = w.BOOL
+        k.GetProcessTimes.argtypes = [
+            w.HANDLE, c.POINTER(self.FILETIME), c.POINTER(self.FILETIME),
+            c.POINTER(self.FILETIME), c.POINTER(self.FILETIME),
+        ]
+        k.GetProcessTimes.restype = w.BOOL
+        k.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+        k.CreateToolhelp32Snapshot.restype = w.HANDLE
+        k.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(self.PROCESSENTRY32W)]
+        k.Process32FirstW.restype = w.BOOL
+        k.Process32NextW.argtypes = [w.HANDLE, c.POINTER(self.PROCESSENTRY32W)]
+        k.Process32NextW.restype = w.BOOL
         k.TerminateJobObject.argtypes = [w.HANDLE, w.UINT]
         k.TerminateJobObject.restype = w.BOOL
         k.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
@@ -680,25 +738,108 @@ class _WindowsJob:
                 int(ctypes.c_size_t.from_buffer(buffer, header_size + index * pointer_size).value)
                 for index in range(min(count, capacity))
             ]
-            return [self._process_name(process_id) for process_id in process_ids]
+            parent_ids = self._process_parent_ids()
+            observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            return [
+                self._process_name(process_id, parent_ids.get(process_id), observed_at)
+                for process_id in process_ids
+            ]
         raise ProcessSupervisionError("Job Object process list changed during repeated queries")
 
-    def _process_name(self, process_id: int) -> Dict[str, Any]:
-        ctypes, wintypes = self.api.ctypes, self.api.wintypes
-        handle = self.api.kernel32.OpenProcess(
-            self.api.PROCESS_QUERY_LIMITED_INFORMATION, False, process_id,
-        )
-        if not handle:
-            return {"pid": process_id, "name": "<unavailable>"}
+    def _process_parent_ids(self) -> Dict[int, int]:
+        """Take a best-effort Toolhelp snapshot for parent-PID diagnostics.
+
+        This metadata is diagnostic only: a Toolhelp failure must never change
+        the authoritative Job Object membership or cleanup result.
+        """
+        ctypes = self.api.ctypes
+        snapshot = None
         try:
+            snapshot = self.api.kernel32.CreateToolhelp32Snapshot(self.api.TH32CS_SNAPPROCESS, 0)
+            invalid_handle = ctypes.c_void_p(-1).value
+            if not snapshot or snapshot == invalid_handle:
+                snapshot = None
+                return {}
+            entry = self.api.PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            if not self.api.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return {}
+            parents = {}
+            while True:
+                parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                if not self.api.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    break
+            return parents
+        except Exception:
+            return {}
+        finally:
+            if snapshot:
+                try:
+                    self.api.kernel32.CloseHandle(snapshot)
+                except Exception:
+                    pass
+
+    def _process_name(
+        self, process_id: int, parent_process_id: Optional[int] = None,
+        observed_at_utc: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ctypes, wintypes = self.api.ctypes, self.api.wintypes
+        details: Dict[str, Any] = {
+            "pid": process_id,
+            "parent_pid": parent_process_id,
+            "name": "<unavailable>",
+            "image_path": None,
+            "process_created_at_utc": None,
+            "observed_at_utc": observed_at_utc,
+            "process_handle_state": "unavailable",
+            # QueryInformationJobObject's active PID list is authoritative here;
+            # this does not claim to expose the scheduler's run/wait state.
+            "job_membership": "active",
+        }
+        query_access = self.api.PROCESS_QUERY_LIMITED_INFORMATION
+        handle = self.api.kernel32.OpenProcess(
+            query_access | self.api.SYNCHRONIZE, False, process_id,
+        )
+        wait_capable = bool(handle)
+        if not handle:
+            # Keep image/start-time diagnostics even where the process DACL
+            # permits querying but denies SYNCHRONIZE access.
+            handle = self.api.kernel32.OpenProcess(query_access, False, process_id)
+        if not handle:
+            return details
+        try:
+            if wait_capable:
+                wait_result = self.api.kernel32.WaitForSingleObject(handle, 0)
+                if wait_result == self.api.WAIT_TIMEOUT:
+                    details["process_handle_state"] = "active"
+                elif wait_result == self.api.WAIT_OBJECT_0:
+                    details["process_handle_state"] = "signaled"
+                else:
+                    details["process_handle_state"] = "unknown"
+
             capacity = 32768
             image = ctypes.create_unicode_buffer(capacity)
             length = wintypes.DWORD(capacity)
-            if not self.api.kernel32.QueryFullProcessImageNameW(
+            if self.api.kernel32.QueryFullProcessImageNameW(
                 handle, 0, image, ctypes.byref(length),
             ):
-                return {"pid": process_id, "name": "<unavailable>"}
-            return {"pid": process_id, "name": os.path.basename(image.value)}
+                details["image_path"] = image.value
+                details["name"] = ntpath.basename(image.value)
+
+            created = self.api.FILETIME()
+            exited = self.api.FILETIME()
+            kernel = self.api.FILETIME()
+            user = self.api.FILETIME()
+            if self.api.kernel32.GetProcessTimes(
+                handle, ctypes.byref(created), ctypes.byref(exited),
+                ctypes.byref(kernel), ctypes.byref(user),
+            ):
+                ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+                created_at = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=ticks // 10)
+                details["process_created_at_utc"] = created_at.isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z",
+                )
+            return details
         finally:
             self.api.kernel32.CloseHandle(handle)
 

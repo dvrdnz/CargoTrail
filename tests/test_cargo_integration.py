@@ -22,6 +22,7 @@ import tempfile
 import tarfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,137 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(agent)
 
 CARGO = shutil.which("cargo")
+
+
+def _windows_cargo_target_linker_variable(rustc_path: str) -> str:
+    """Return Cargo's target-specific linker environment variable for rustc's host."""
+    rustc_info = subprocess.run(
+        [rustc_path, "-vV"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=15, check=False,
+    )
+    if rustc_info.returncode != 0:
+        raise RuntimeError("rustc -vV failed while selecting the Windows Cargo test linker")
+    host = next((line.split(":", 1)[1].strip() for line in rustc_info.stdout.splitlines()
+                 if line.startswith("host: ")), None)
+    if not host:
+        raise RuntimeError("rustc -vV did not report its host target")
+    return "CARGO_TARGET_{}_LINKER".format(host.upper().replace("-", "_"))
+
+
+def _windows_cargo_lld_configuration(rustc_path: str) -> tuple[str, str]:
+    """Return Cargo's target-linker variable and an installed MSVC-compatible lld-link.
+
+    This is an explicit test-only control variant. It does not change the
+    production linker selection or relax Job Object process-tree verification.
+    """
+    linker = shutil.which("lld-link.exe") or shutil.which("lld-link")
+    if not linker:
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        candidates = [program_files / "LLVM" / "bin" / "lld-link.exe"]
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            root_value = os.environ.get(variable)
+            if root_value:
+                visual_studio = Path(root_value) / "Microsoft Visual Studio"
+                if visual_studio.is_dir():
+                    candidates.extend(visual_studio.glob("*/*/VC/Tools/Llvm/x64/bin/lld-link.exe"))
+        linker = next((str(path) for path in candidates if path.is_file()), None)
+    if not linker:
+        raise RuntimeError("Windows real Cargo LLD diagnostic requires LLVM lld-link.exe")
+    return _windows_cargo_target_linker_variable(rustc_path), str(linker)
+
+
+class WindowsCargoLinkerConfigurationTests(unittest.TestCase):
+    def test_uses_lld_link_and_rustc_host_target_environment_key(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            llvm = Path(temp) / "LLVM" / "bin"
+            llvm.mkdir(parents=True)
+            linker = llvm / "lld-link.exe"
+            linker.write_bytes(b"test linker placeholder")
+            with mock.patch.object(shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {"ProgramFiles": temp}, clear=False), \
+                    mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-msvc\n",
+                        stderr="",
+                    )) as rustc_run:
+                variable, selected = _windows_cargo_lld_configuration("rustc.exe")
+        self.assertEqual(variable, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+        self.assertEqual(selected, str(linker))
+        rustc_run.assert_called_once()
+        self.assertEqual(rustc_run.call_args.args[0], ["rustc.exe", "-vV"])
+
+    def test_msvc_mode_uses_target_linker_variable_for_explicit_unset(self):
+        from types import SimpleNamespace
+        with mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+            returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-msvc\n", stderr="",
+        )) as rustc_run:
+            variable = _windows_cargo_target_linker_variable("rustc.exe")
+        self.assertEqual(variable, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+        rustc_run.assert_called_once_with(
+            ["rustc.exe", "-vV"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=15, check=False,
+        )
+
+    def test_msvc_mode_unsets_cargo_linker_override_in_real_test_setup(self):
+        from types import SimpleNamespace
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(shutil, "which", return_value="rustc.exe"), \
+                mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-msvc\n", stderr="",
+                )), \
+                mock.patch.object(sys.modules[__name__], "CARGO", "cargo.exe"), \
+                mock.patch.dict(os.environ, {"CARGOTRAIL_WINDOWS_LINKER": "msvc"}, clear=False):
+            RealCargoIntegrationTests.setUpClass()
+
+        self.assertEqual(
+            RealCargoIntegrationTests.cargo_test_unset_environment,
+            ["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"],
+        )
+        self.assertEqual(RealCargoIntegrationTests.cargo_test_environment, {"CARGO_NET_OFFLINE": "true"})
+
+    def test_unconfigured_windows_setup_preserves_lld_control_default(self):
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(shutil, "which", return_value="rustc.exe"), \
+                mock.patch.object(sys.modules[__name__], "CARGO", "cargo.exe"), \
+                mock.patch.object(
+                    sys.modules[__name__], "_windows_cargo_lld_configuration",
+                    return_value=("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER", r"C:\LLVM\bin\lld-link.exe"),
+                ), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            RealCargoIntegrationTests.setUpClass()
+
+        self.assertEqual(RealCargoIntegrationTests.cargo_test_unset_environment, [])
+        self.assertEqual(
+            RealCargoIntegrationTests.cargo_test_environment,
+            {
+                "CARGO_NET_OFFLINE": "true",
+                "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": r"C:\LLVM\bin\lld-link.exe",
+            },
+        )
+
+    def test_lld_mode_injects_only_the_test_linker_override(self):
+        from types import SimpleNamespace
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(shutil, "which", return_value="rustc.exe"), \
+                mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-msvc\n", stderr="",
+                )), \
+                mock.patch.object(sys.modules[__name__], "CARGO", "cargo.exe"), \
+                mock.patch.object(
+                    sys.modules[__name__], "_windows_cargo_lld_configuration",
+                    return_value=("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER", r"C:\LLVM\bin\lld-link.exe"),
+                ), \
+                mock.patch.dict(os.environ, {"CARGOTRAIL_WINDOWS_LINKER": "lld"}, clear=False):
+            RealCargoIntegrationTests.setUpClass()
+
+        self.assertEqual(RealCargoIntegrationTests.cargo_test_unset_environment, [])
+        self.assertEqual(
+            RealCargoIntegrationTests.cargo_test_environment,
+            {
+                "CARGO_NET_OFFLINE": "true",
+                "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": r"C:\LLVM\bin\lld-link.exe",
+            },
+        )
 
 
 class RealCargoIntegrationTests(unittest.TestCase):
@@ -53,6 +185,36 @@ class RealCargoIntegrationTests(unittest.TestCase):
             if os.environ.get("CARGO_INTEGRATION_REQUIRED") == "1":
                 raise RuntimeError(reason)
             raise unittest.SkipTest(reason)
+
+        cls.cargo_test_environment = {"CARGO_NET_OFFLINE": "true"}
+        cls.cargo_test_unset_environment = []
+        if os.name == "nt":
+            # Preserve the previous LLD control default. The diagnostic matrix
+            # selects the native MSVC linker explicitly for its comparison lane.
+            linker_mode = os.environ.get("CARGOTRAIL_WINDOWS_LINKER", "lld").strip().lower()
+            if linker_mode == "msvc":
+                linker_variable = _windows_cargo_target_linker_variable(rustc)
+                cls.cargo_test_unset_environment.append(linker_variable)
+                print(
+                    "Windows Cargo integration linker: MSVC default ({} unset)".format(
+                        linker_variable,
+                    )
+                )
+            elif linker_mode == "lld":
+                try:
+                    linker_variable, linker = _windows_cargo_lld_configuration(rustc)
+                except RuntimeError as exc:
+                    if os.environ.get("CARGO_INTEGRATION_REQUIRED") == "1":
+                        raise
+                    raise unittest.SkipTest(str(exc))
+                cls.cargo_test_environment[linker_variable] = linker
+                print("Windows Cargo integration linker: lld-link ({})".format(linker))
+            else:
+                raise RuntimeError(
+                    "CARGOTRAIL_WINDOWS_LINKER must be either 'msvc' or 'lld', got {!r}".format(
+                        linker_mode,
+                    )
+                )
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-evidence-real-")
@@ -161,8 +323,8 @@ class RealCargoIntegrationTests(unittest.TestCase):
                 "continue_on_error": True,
                 "default_timeout_seconds": 300,
                 "termination_grace_seconds": 3,
-                "environment": {"CARGO_NET_OFFLINE": "true"},
-                "unset_environment": [],
+                "environment": dict(self.cargo_test_environment),
+                "unset_environment": list(self.cargo_test_unset_environment),
             },
             "steps": [step],
         }
@@ -297,8 +459,8 @@ mod tests {
                 "continue_on_error": True,
                 "default_timeout_seconds": 300,
                 "termination_grace_seconds": 3,
-                "environment": {"CARGO_NET_OFFLINE": "true"},
-                "unset_environment": [],
+                "environment": dict(self.cargo_test_environment),
+                "unset_environment": list(self.cargo_test_unset_environment),
             },
             "steps": [
                 self.step("check", ["check", "--offline", "--message-format=json"], "cargo-json"),
@@ -456,7 +618,7 @@ mod tests {
             "execution": {
                 "cargo_executable": CARGO, "continue_on_error": True,
                 "default_timeout_seconds": 300, "termination_grace_seconds": 3,
-                "environment": {"CARGO_NET_OFFLINE": "true"}, "unset_environment": [],
+                "environment": dict(self.cargo_test_environment), "unset_environment": list(self.cargo_test_unset_environment),
             },
             "steps": [first, second, third, fourth],
         }, indent=2), encoding="utf-8")
