@@ -748,19 +748,40 @@ class _WindowsJob:
                 int(ctypes.c_size_t.from_buffer(buffer, header_size + index * pointer_size).value)
                 for index in range(min(count, capacity))
             ]
-            parent_ids = self._process_parent_ids()
+            process_snapshot = self._process_snapshot()
             observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-            return [
-                self._process_name(process_id, parent_ids.get(process_id), observed_at)
-                for process_id in process_ids
-            ]
+            details = []
+            for process_id in process_ids:
+                process_entry = process_snapshot.get(process_id) if process_snapshot is not None else None
+                parent_process_id = process_entry.get("parent_pid") if process_entry else None
+                parent_entry = (
+                    process_snapshot.get(parent_process_id)
+                    if process_snapshot is not None and parent_process_id is not None else None
+                )
+                if process_snapshot is None:
+                    parent_snapshot_status = "unavailable"
+                elif process_entry is None:
+                    parent_snapshot_status = "member-not-present"
+                elif parent_process_id is None:
+                    parent_snapshot_status = "parent-pid-unavailable"
+                elif parent_entry is None:
+                    parent_snapshot_status = "parent-not-present"
+                else:
+                    parent_snapshot_status = "present"
+                details.append(self._process_name(
+                    process_id, parent_process_id, observed_at,
+                    parent_entry, parent_snapshot_status,
+                ))
+            return details
         raise ProcessSupervisionError("Job Object process list changed during repeated queries")
 
-    def _process_parent_ids(self) -> Dict[int, int]:
-        """Take a best-effort Toolhelp snapshot for parent-PID diagnostics.
+    def _process_snapshot(self) -> Optional[Dict[int, Dict[str, Any]]]:
+        """Take a best-effort Toolhelp process snapshot for lineage diagnostics.
 
+        The snapshot includes executable basenames and parent PIDs so a Job
+        Object member's direct parent can be identified at observation time.
         This metadata is diagnostic only: a Toolhelp failure must never change
-        the authoritative Job Object membership or cleanup result.
+        authoritative Job Object membership or the cleanup result.
         """
         ctypes = self.api.ctypes
         snapshot = None
@@ -769,19 +790,23 @@ class _WindowsJob:
             invalid_handle = ctypes.c_void_p(-1).value
             if not snapshot or snapshot == invalid_handle:
                 snapshot = None
-                return {}
+                return None
             entry = self.api.PROCESSENTRY32W()
             entry.dwSize = ctypes.sizeof(entry)
             if not self.api.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
-                return {}
-            parents = {}
+                return None
+            processes: Dict[int, Dict[str, Any]] = {}
             while True:
-                parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                process_id = int(entry.th32ProcessID)
+                processes[process_id] = {
+                    "parent_pid": int(entry.th32ParentProcessID),
+                    "name": str(entry.szExeFile),
+                }
                 if not self.api.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
                     break
-            return parents
+            return processes
         except Exception:
-            return {}
+            return None
         finally:
             if snapshot:
                 try:
@@ -792,11 +817,16 @@ class _WindowsJob:
     def _process_name(
         self, process_id: int, parent_process_id: Optional[int] = None,
         observed_at_utc: Optional[str] = None,
+        parent_details: Optional[Dict[str, Any]] = None,
+        parent_snapshot_status: str = "unavailable",
     ) -> Dict[str, Any]:
         ctypes, wintypes = self.api.ctypes, self.api.wintypes
         details: Dict[str, Any] = {
             "pid": process_id,
             "parent_pid": parent_process_id,
+            "parent_name": parent_details.get("name") if parent_details else None,
+            "parent_parent_pid": parent_details.get("parent_pid") if parent_details else None,
+            "parent_snapshot_status": parent_snapshot_status,
             "name": "<unavailable>",
             "image_path": None,
             "process_created_at_utc": None,

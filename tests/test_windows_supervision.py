@@ -183,10 +183,16 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         job = object.__new__(supervision._WindowsJob)
         job.api = fake_api
 
-        details = job._process_name(8675, 4321, "2026-11-10T10:00:03.000Z")
+        details = job._process_name(
+            8675, 4321, "2026-11-10T10:00:03.000Z",
+            {"name": "cl.exe", "parent_pid": 1200}, "present",
+        )
 
         self.assertEqual(details["pid"], 8675)
         self.assertEqual(details["parent_pid"], 4321)
+        self.assertEqual(details["parent_name"], "cl.exe")
+        self.assertEqual(details["parent_parent_pid"], 1200)
+        self.assertEqual(details["parent_snapshot_status"], "present")
         self.assertEqual(details["name"], "vctip.exe")
         self.assertEqual(
             details["image_path"],
@@ -248,6 +254,8 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
 
         details = job._process_name(8675, 4321, "2026-11-10T10:00:03.000Z")
 
+        self.assertIsNone(details["parent_name"])
+        self.assertEqual(details["parent_snapshot_status"], "unavailable")
         self.assertEqual(
             fake_kernel32.open_process_access,
             [0x1000 | 0x00100000, 0x1000],
@@ -255,6 +263,72 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         self.assertEqual(details["name"], "vctip.exe")
         self.assertIsNotNone(details["process_created_at_utc"])
         self.assertEqual(details["process_handle_state"], "unavailable")
+
+    def test_process_snapshot_records_parent_executable_names(self):
+        class ProcessEntry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", ctypes.c_uint32),
+                ("cntUsage", ctypes.c_uint32),
+                ("th32ProcessID", ctypes.c_uint32),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", ctypes.c_uint32),
+                ("cntThreads", ctypes.c_uint32),
+                ("th32ParentProcessID", ctypes.c_uint32),
+                ("pcPriClassBase", ctypes.c_int32),
+                ("dwFlags", ctypes.c_uint32),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        class FakeKernel32:
+            def __init__(self):
+                self.index = 0
+                self.entries = [
+                    (8675, 4321, "vctip.exe"),
+                    (4321, 1200, "cl.exe"),
+                ]
+                self.closed = []
+
+            def CreateToolhelp32Snapshot(self, *_args):
+                return 77
+
+            def Process32FirstW(self, _snapshot, entry_pointer):
+                self.index = 0
+                self._fill(entry_pointer)
+                return True
+
+            def Process32NextW(self, _snapshot, entry_pointer):
+                self.index += 1
+                if self.index >= len(self.entries):
+                    return False
+                self._fill(entry_pointer)
+                return True
+
+            def _fill(self, entry_pointer):
+                pid, parent_pid, name = self.entries[self.index]
+                entry = entry_pointer._obj
+                entry.th32ProcessID = pid
+                entry.th32ParentProcessID = parent_pid
+                entry.szExeFile = name
+
+            def CloseHandle(self, handle):
+                self.closed.append(handle)
+                return True
+
+        fake_kernel32 = FakeKernel32()
+        fake_api = SimpleNamespace(
+            ctypes=ctypes,
+            kernel32=fake_kernel32,
+            PROCESSENTRY32W=ProcessEntry,
+            TH32CS_SNAPPROCESS=supervision._WindowsNativeApi.TH32CS_SNAPPROCESS,
+        )
+        job = object.__new__(supervision._WindowsJob)
+        job.api = fake_api
+
+        snapshot = job._process_snapshot()
+
+        self.assertEqual(snapshot[8675], {"parent_pid": 4321, "name": "vctip.exe"})
+        self.assertEqual(snapshot[4321], {"parent_pid": 1200, "name": "cl.exe"})
+        self.assertEqual(fake_kernel32.closed, [77])
 
     def test_after_leader_exit_allows_job_children_to_finish_naturally(self):
         job = object.__new__(supervision._WindowsJob)
