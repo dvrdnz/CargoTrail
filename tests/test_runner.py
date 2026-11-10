@@ -68,7 +68,7 @@ def _pid_is_running(pid):
                 ["ps", "-p", str(int(pid)), "-o", "stat="],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=2.0,
                 check=False,
@@ -76,10 +76,21 @@ def _pid_is_running(pid):
         except (OSError, subprocess.TimeoutExpired):
             return True  # Unable to prove that the process has exited.
         if completed.returncode != 0:
-            return True  # A failed probe is not proof that the process has exited.
+            # Apple ps exits with status 1 and no output when -p matches no
+            # process. That is the normal result after successful cleanup, not
+            # a probe error. Keep other non-zero results conservative.
+            if (
+                completed.returncode == 1
+                and not completed.stdout.strip()
+                and not getattr(completed, "stderr", "").strip()
+            ):
+                return False
+            return True
         state = completed.stdout.strip().split()
         if not state:
-            return False
+            # A successful ps invocation without a state row is unexpected;
+            # only the explicit no-match result above proves that the PID is gone.
+            return True
         return not state[0].startswith(("Z", "X"))
     try:
         os.kill(pid, 0)
@@ -730,10 +741,26 @@ class RunnerUnitTests(unittest.TestCase):
                 mock.patch.object(supervision.subprocess, "run", side_effect=OSError("ps unavailable")):
             self.assertTrue(_pid_is_running(43210))
 
+    def test_darwin_pid_probe_treats_no_matching_process_as_exited(self):
+        with _mock_darwin_pid_probe_platform(), \
+                mock.patch.object(supervision.subprocess, "run") as run:
+            run.return_value = type(
+                "Completed", (), {"returncode": 1, "stdout": "", "stderr": ""},
+            )()
+            self.assertFalse(_pid_is_running(43210))
+
     def test_darwin_pid_probe_fails_closed_on_ps_error(self):
         with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run") as run:
-            run.return_value = type("Completed", (), {"returncode": 1, "stdout": ""})()
+            run.return_value = type(
+                "Completed", (), {"returncode": 1, "stdout": "", "stderr": "ps: simulated error"},
+            )()
+            self.assertTrue(_pid_is_running(43210))
+
+    def test_darwin_pid_probe_fails_closed_on_empty_successful_ps_output(self):
+        with _mock_darwin_pid_probe_platform(), \
+                mock.patch.object(supervision.subprocess, "run") as run:
+            run.return_value = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             self.assertTrue(_pid_is_running(43210))
 
     def test_cli_version_option_reports_current_release_without_config(self):
