@@ -133,11 +133,13 @@ def _ps_session_groups(session_id: int) -> Optional[set]:
 
     macOS's ``ps`` accepts the ``sess`` keyword but reports zero for it; it
     therefore cannot be used to identify POSIX sessions there. Enumerate PIDs
-    and process groups with ``ps`` and obtain each session ID via ``getsid(2)``
-    (exposed by :func:`os.getsid`). A process that exits during the scan is a
-    normal race and is ignored. Any other lookup failure makes the snapshot
-    incomplete: silently omitting a process would turn an unverified cleanup
-    into a false success.
+    and process groups owned by the current real UID, then obtain each session
+    ID via ``getsid(2)`` (exposed by :func:`os.getsid`). Restricting the query
+    avoids unrelated system and other-user processes whose session metadata
+    the runner is not permitted to inspect. A process that exits during the
+    scan is a normal race and is ignored. Any other lookup failure makes the
+    snapshot incomplete: silently omitting a process would turn an unverified
+    cleanup into a false success.
     """
     ps = shutil.which("ps")
     get_session_id = getattr(os, "getsid", None)
@@ -145,7 +147,7 @@ def _ps_session_groups(session_id: int) -> Optional[set]:
         return None
     try:
         completed = subprocess.run(
-            [ps, "-A", "-o", "pid=,pgid=,stat="],
+            [ps, "-U", str(os.getuid()), "-o", "pid=,pgid=,stat="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

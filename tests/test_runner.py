@@ -704,27 +704,34 @@ class CargoInvocationAnalysisTests(unittest.TestCase):
             self.assertEqual(run_process.call_args.args[0], [sys.executable] + original)
 
 
+def _mock_darwin_pid_probe_platform():
+    """Select the Darwin/POSIX branch without mutating process-global modules."""
+    fake_os = type("PosixOS", (), {"name": "posix"})()
+    fake_sys = type("DarwinSys", (), {"platform": "darwin"})()
+    return mock.patch.dict(_pid_is_running.__globals__, {"os": fake_os, "sys": fake_sys})
+
+
 class RunnerUnitTests(unittest.TestCase):
     def test_darwin_pid_probe_treats_zombie_as_exited(self):
-        with mock.patch.object(sys, "platform", "darwin"), \
+        with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run") as run:
             run.return_value = type("Completed", (), {"returncode": 0, "stdout": "Z+\n"})()
             self.assertFalse(_pid_is_running(43210))
             self.assertEqual(run.call_args.args[0], ["ps", "-p", "43210", "-o", "stat="])
 
     def test_darwin_pid_probe_treats_live_state_as_running(self):
-        with mock.patch.object(sys, "platform", "darwin"), \
+        with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run") as run:
             run.return_value = type("Completed", (), {"returncode": 0, "stdout": "S+\n"})()
             self.assertTrue(_pid_is_running(43210))
 
     def test_darwin_pid_probe_fails_closed_when_ps_cannot_verify(self):
-        with mock.patch.object(sys, "platform", "darwin"), \
+        with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run", side_effect=OSError("ps unavailable")):
             self.assertTrue(_pid_is_running(43210))
 
     def test_darwin_pid_probe_fails_closed_on_ps_error(self):
-        with mock.patch.object(sys, "platform", "darwin"), \
+        with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run") as run:
             run.return_value = type("Completed", (), {"returncode": 1, "stdout": ""})()
             self.assertTrue(_pid_is_running(43210))
@@ -3760,7 +3767,10 @@ class RunnerUnitTests(unittest.TestCase):
             groups = supervision._ps_session_groups(9001)
         self.assertEqual(groups, {101, 102})
         self.assertEqual(getsid.call_args_list, [mock.call(101), mock.call(102), mock.call(103)])
-        self.assertEqual(run.call_args.args[0][-1], "pid=,pgid=,stat=")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/ps", "-U", str(os.getuid()), "-o", "pid=,pgid=,stat="],
+        )
 
     @unittest.skipIf(os.name == "nt", "POSIX ps/getsid fallback is unavailable on Windows")
     def test_ps_fallback_marks_permission_errors_as_incomplete(self):
@@ -4913,6 +4923,90 @@ class RunnerUnitTests(unittest.TestCase):
             self.assertNotEqual(without_inventory["status"], "present")
             self.assertIsNone(without_inventory["sha256"])
 
+    def _canonicalize_cargo_path_with_fake_windows_api(self, path, responses):
+        import ctypes
+        import ntpath
+        from pathlib import PureWindowsPath
+
+        calls = []
+
+        def fake_get_long_path_name(candidate, buffer, buffer_length):
+            calls.append(candidate)
+            result = responses.get(candidate)
+            if result is None:
+                return 0
+            buffer.value = result
+            return len(result)
+
+        fake_kernel32 = type("FakeKernel32", (), {})()
+        fake_kernel32.GetLongPathNameW = fake_get_long_path_name
+        fake_windows_os = type("WindowsOS", (), {"name": "nt", "path": ntpath})()
+
+        with mock.patch.object(provenance, "os", fake_windows_os), \
+                mock.patch.object(provenance, "Path", PureWindowsPath), \
+                mock.patch.object(ctypes, "WinDLL", return_value=fake_kernel32, create=True):
+            canonical = provenance._canonical_cargo_config_path(path)
+        return canonical, calls
+
+    def test_windows_cargo_config_path_uses_full_get_long_path_name_result(self):
+        import ntpath
+        from pathlib import PureWindowsPath
+
+        requested = PureWindowsPath(r"C:\CargoTrail\short-parent\cargo-config.toml")
+        absolute = PureWindowsPath(ntpath.abspath(str(requested)))
+        expected = PureWindowsPath(r"C:\CargoTrail\Long Parent Name\Cargo-Config.toml")
+        canonical, calls = self._canonicalize_cargo_path_with_fake_windows_api(
+            requested, {str(absolute): str(expected)},
+        )
+        self.assertEqual(canonical, expected)
+        self.assertEqual(calls, [str(absolute)])
+
+    def test_windows_cargo_config_path_falls_back_to_long_parent_and_preserves_name(self):
+        import ntpath
+        from pathlib import PureWindowsPath
+
+        requested = PureWindowsPath(r"C:\CargoTrail\short-parent\linked-config.toml")
+        absolute = PureWindowsPath(ntpath.abspath(str(requested)))
+        expected_parent = PureWindowsPath(r"C:\CargoTrail\Long Parent Name")
+        canonical, calls = self._canonicalize_cargo_path_with_fake_windows_api(
+            requested,
+            {
+                str(absolute): None,
+                str(absolute.parent): str(expected_parent),
+            },
+        )
+        self.assertEqual(canonical, expected_parent / absolute.name)
+        self.assertEqual(calls, [str(absolute), str(absolute.parent)])
+
+    @unittest.skipUnless(os.name == "nt", "Requires the native Windows GetLongPathNameW API")
+    def test_windows_cargo_config_path_matches_native_get_long_path_name(self):
+        import ctypes
+        from ctypes import wintypes
+
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp) / "Mixed Case Cargo Config Directory"
+            parent.mkdir()
+            config_path = parent / "CargoConfig.TOML"
+            config_path.write_text("[build]\ntarget = 'x86_64-pc-windows-msvc'\n", encoding="utf-8")
+
+            # Windows resolves paths case-insensitively on the runner's default
+            # filesystem. Supplying deliberately altered casing proves that the
+            # canonicalizer returns the stored long-path spelling rather than
+            # merely returning its input unchanged.
+            requested_path = Path(str(config_path).swapcase())
+            get_long_path_name = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+            get_long_path_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+            get_long_path_name.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_long_path_name(str(requested_path), buffer, len(buffer))
+            self.assertGreater(length, 0, "GetLongPathNameW failed for an existing Cargo config file")
+            self.assertNotEqual(str(requested_path), buffer.value)
+
+            canonical = provenance._canonical_cargo_config_path(requested_path)
+            self.assertEqual(str(canonical), buffer.value)
+            self.assertTrue(canonical.is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX parent-symlink canonicalization is not used on Windows")
     def test_cargo_config_path_resolves_symlinked_parent_but_not_final_component(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

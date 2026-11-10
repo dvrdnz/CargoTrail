@@ -93,6 +93,7 @@ jobs:
           python-version: "3.14"
       - uses: dtolnay/rust-toolchain@stable
       - name: Record Windows linker and vctip environment
+        continue-on-error: true
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path windows-diagnostics | Out-Null
@@ -110,12 +111,27 @@ jobs:
             else { $report += "$tool=<not-on-PATH>" }
           }
           $report | Set-Content -Encoding utf8 windows-diagnostics/toolchain.txt
-          $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'vctip.exe'" |
-            Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
-          $processes | ConvertTo-Json -Depth 4 |
-            Set-Content -Encoding utf8 windows-diagnostics/vctip-before.json
-          Get-Content windows-diagnostics/toolchain.txt
-          Get-Content windows-diagnostics/vctip-before.json
+
+          $processes = @()
+          $queryError = $null
+          try {
+            $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'vctip.exe'" -ErrorAction Stop |
+              Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
+          } catch {
+            $queryError = $_.Exception.ToString()
+            Write-Warning "Could not query vctip.exe before Cargo tests: $queryError"
+          }
+          $snapshot = [ordered]@{
+            captured_at_utc = [DateTime]::UtcNow.ToString("o")
+            query_succeeded = ($null -eq $queryError)
+            query_error = $queryError
+            count = @($processes).Count
+            processes = @($processes)
+          }
+          $snapshotJson = ConvertTo-Json -InputObject $snapshot -Depth 5
+          Set-Content -LiteralPath windows-diagnostics/vctip-before.json -Value $snapshotJson -Encoding utf8
+          Get-Content -LiteralPath windows-diagnostics/toolchain.txt
+          Get-Content -LiteralPath windows-diagnostics/vctip-before.json
       - name: Run the three previously affected real-Cargo tests
         shell: pwsh
         run: |
@@ -131,13 +147,29 @@ jobs:
           exit $testExit
       - name: Record vctip state after the tests
         if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
-          $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'vctip.exe'" |
-            Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
-          $processes | ConvertTo-Json -Depth 4 |
-            Set-Content -Encoding utf8 windows-diagnostics/vctip-after.json
-          Get-Content windows-diagnostics/vctip-after.json
+          New-Item -ItemType Directory -Force -Path windows-diagnostics | Out-Null
+          $processes = @()
+          $queryError = $null
+          try {
+            $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'vctip.exe'" -ErrorAction Stop |
+              Select-Object ProcessId, ParentProcessId, ExecutablePath, CreationDate)
+          } catch {
+            $queryError = $_.Exception.ToString()
+            Write-Warning "Could not query vctip.exe after Cargo tests: $queryError"
+          }
+          $snapshot = [ordered]@{
+            captured_at_utc = [DateTime]::UtcNow.ToString("o")
+            query_succeeded = ($null -eq $queryError)
+            query_error = $queryError
+            count = @($processes).Count
+            processes = @($processes)
+          }
+          $snapshotJson = ConvertTo-Json -InputObject $snapshot -Depth 5
+          Set-Content -LiteralPath windows-diagnostics/vctip-after.json -Value $snapshotJson -Encoding utf8
+          Get-Content -LiteralPath windows-diagnostics/vctip-after.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:

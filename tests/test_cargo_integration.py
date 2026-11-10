@@ -62,18 +62,35 @@ def _windows_cargo_lld_configuration(rustc_path: str) -> tuple[str, str]:
     """
     linker = shutil.which("lld-link.exe") or shutil.which("lld-link")
     if not linker:
-        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-        candidates = [program_files / "LLVM" / "bin" / "lld-link.exe"]
+        roots = []
         for variable in ("ProgramFiles", "ProgramFiles(x86)"):
             root_value = os.environ.get(variable)
             if root_value:
-                visual_studio = Path(root_value) / "Microsoft Visual Studio"
-                if visual_studio.is_dir():
-                    candidates.extend(visual_studio.glob("*/*/VC/Tools/Llvm/x64/bin/lld-link.exe"))
+                root_path = Path(root_value)
+                if root_path not in roots:
+                    roots.append(root_path)
+        if not roots:
+            roots.append(Path(r"C:\Program Files"))
+
+        candidates = []
+        for root_path in roots:
+            candidates.append(root_path / "LLVM" / "bin" / "lld-link.exe")
+            visual_studio = root_path / "Microsoft Visual Studio"
+            if visual_studio.is_dir():
+                candidates.extend(visual_studio.glob("*/*/VC/Tools/Llvm/bin/lld-link.exe"))
+                candidates.extend(visual_studio.glob("*/*/VC/Tools/Llvm/x64/bin/lld-link.exe"))
         linker = next((str(path) for path in candidates if path.is_file()), None)
     if not linker:
         raise RuntimeError("Windows real Cargo LLD diagnostic requires LLVM lld-link.exe")
-    return _windows_cargo_target_linker_variable(rustc_path), str(linker)
+
+    linker_variable = _windows_cargo_target_linker_variable(rustc_path)
+    if not linker_variable.endswith("_WINDOWS_MSVC_LINKER"):
+        raise RuntimeError(
+            "lld-link requires a Windows MSVC rustc host target; got linker variable {}".format(
+                linker_variable,
+            )
+        )
+    return linker_variable, str(linker)
 
 
 class WindowsCargoLinkerConfigurationTests(unittest.TestCase):
@@ -95,6 +112,36 @@ class WindowsCargoLinkerConfigurationTests(unittest.TestCase):
         self.assertEqual(selected, str(linker))
         rustc_run.assert_called_once()
         self.assertEqual(rustc_run.call_args.args[0], ["rustc.exe", "-vV"])
+
+    def test_finds_lld_link_in_visual_studio_llvm_bin_directory(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            linker = Path(temp) / "Microsoft Visual Studio" / "2022" / "Enterprise" / "VC" / "Tools" / "Llvm" / "bin" / "lld-link.exe"
+            linker.parent.mkdir(parents=True)
+            linker.write_bytes(b"test linker placeholder")
+            with mock.patch.object(shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {"ProgramFiles": temp}, clear=False), \
+                    mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-msvc\n", stderr="",
+                    )):
+                variable, selected = _windows_cargo_lld_configuration("rustc.exe")
+        self.assertEqual(variable, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER")
+        self.assertEqual(selected, str(linker))
+
+    def test_rejects_non_msvc_rustc_host_for_lld_link(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            llvm = Path(temp) / "LLVM" / "bin"
+            llvm.mkdir(parents=True)
+            linker = llvm / "lld-link.exe"
+            linker.write_bytes(b"test linker placeholder")
+            with mock.patch.object(shutil, "which", return_value=None), \
+                    mock.patch.dict(os.environ, {"ProgramFiles": temp}, clear=False), \
+                    mock.patch.object(subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout="rustc 1.90.0\nhost: x86_64-pc-windows-gnu\n", stderr="",
+                    )):
+                with self.assertRaisesRegex(RuntimeError, "Windows MSVC rustc host target"):
+                    _windows_cargo_lld_configuration("rustc.exe")
 
     def test_msvc_mode_uses_target_linker_variable_for_explicit_unset(self):
         from types import SimpleNamespace
