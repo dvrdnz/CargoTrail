@@ -39,6 +39,24 @@ SPEC.loader.exec_module(agent)
 CARGO = shutil.which("cargo")
 
 
+def _cargo_integration_termination_grace_seconds() -> int:
+    """Return the test-only process drain window, defaulting to three seconds."""
+    configured = os.environ.get("CARGOTRAIL_TEST_TERMINATION_GRACE_SECONDS")
+    if configured is None or not configured.strip():
+        return 3
+    try:
+        seconds = int(configured)
+    except ValueError as exc:
+        raise RuntimeError(
+            "CARGOTRAIL_TEST_TERMINATION_GRACE_SECONDS must be an integer"
+        ) from exc
+    if not 0 <= seconds <= 60:
+        raise RuntimeError(
+            "CARGOTRAIL_TEST_TERMINATION_GRACE_SECONDS must be between 0 and 60"
+        )
+    return seconds
+
+
 def _windows_cargo_target_linker_variable(rustc_path: str) -> str:
     """Return Cargo's target-specific linker environment variable for rustc's host."""
     rustc_info = subprocess.run(
@@ -262,6 +280,11 @@ class RealCargoIntegrationTests(unittest.TestCase):
                         linker_mode,
                     )
                 )
+            print(
+                "Windows Cargo integration termination grace: {} seconds".format(
+                    _cargo_integration_termination_grace_seconds(),
+                )
+            )
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-evidence-real-")
@@ -369,7 +392,7 @@ class RealCargoIntegrationTests(unittest.TestCase):
                 "cargo_executable": CARGO,
                 "continue_on_error": True,
                 "default_timeout_seconds": 300,
-                "termination_grace_seconds": 3,
+                "termination_grace_seconds": _cargo_integration_termination_grace_seconds(),
                 "environment": dict(self.cargo_test_environment),
                 "unset_environment": list(self.cargo_test_unset_environment),
             },
@@ -505,7 +528,7 @@ mod tests {
                 "cargo_executable": CARGO,
                 "continue_on_error": True,
                 "default_timeout_seconds": 300,
-                "termination_grace_seconds": 3,
+                "termination_grace_seconds": _cargo_integration_termination_grace_seconds(),
                 "environment": dict(self.cargo_test_environment),
                 "unset_environment": list(self.cargo_test_unset_environment),
             },
@@ -904,7 +927,15 @@ mod tests {
             results[allowed] = (code, output, record)
         disallowed_code, disallowed_output, disallowed = results[False]
         self.assertEqual(disallowed_code, 1)
-        self.assertEqual((disallowed["status"], disallowed["evidence_status"]), ("incomplete", "incomplete"))
+        self.assertEqual(
+            (disallowed["status"], disallowed["evidence_status"]),
+            ("incomplete", "incomplete"),
+            "unexpected zero-test step result: {}".format(json.dumps({
+                key: disallowed.get(key)
+                for key in ("exit_code", "status", "evidence_status", "orphan_processes_detected",
+                            "supervision_error", "process_tree")
+            }, sort_keys=True)),
+        )
         self.assertEqual(disallowed["tests"]["state"], "zero-tests-not-allowed")
         self.assertEqual(disallowed["tests"]["executed_test_count"], 0)
         self.assertTrue(json.loads((disallowed_output / "zero-tests-default" / "test-results.json").read_text(encoding="utf-8"))[
