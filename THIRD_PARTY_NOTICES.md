@@ -6,7 +6,7 @@ This file records the third-party software identified in the source repository a
 
 The application source imports only Python standard-library modules. It has no third-party Python runtime package dependency. Cargo and Rustc are external tools invoked from the user's environment; they are not bundled by this project.
 
-When a standalone executable is built, it contains a CPython runtime. Python and its standard library are distributed under the Python Software Foundation (PSF) License Version 2, while some components included with Python may carry separate notices. The release process must preserve the license and notices supplied with the exact Python distribution used by each native build. See the [Python license documentation](https://docs.python.org/3/license.html).
+When a standalone executable is built, it contains a CPython runtime. Python and its standard library are distributed under the Python Software Foundation (PSF) License Version 2, while some components included with Python may carry separate notices. Each release archive includes the license file shipped with the exact Python distribution used for that native build as `PYTHON-LICENSE.txt`. Native libraries bundled next to the Python runtime (depending on the platform, for example OpenSSL, expat, libffi, zlib, bzip2, or liblzma) carry their own notices, which that file does not fully cover. See the [Python license documentation](https://docs.python.org/3/license.html).
 
 ## Build-time dependency
 

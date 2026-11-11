@@ -156,7 +156,7 @@ On Windows, run the downloaded `.exe` from PowerShell or Command Prompt:
 .\cargotrail.exe --version
 ```
 
-Each binary archive includes `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, and `SOURCE-CODE.txt` pointing to the exact source tag. The release workflow also publishes `SHA256SUMS.txt`. Verify downloaded assets before use. Binaries are not code-signed or notarized by the default workflow. See [Building and releasing](docs/releasing.md) for local build instructions and the tag-based release process.
+Each binary archive includes `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `PYTHON-LICENSE.txt` (license of the bundled Python runtime), and `SOURCE-CODE.txt` pointing to the exact source tag. The release workflow also publishes `SHA256SUMS.txt`. Verify downloaded assets before use. Binaries are not code-signed or notarized by the default workflow. See [Building and releasing](docs/releasing.md) for local build instructions and the tag-based release process.
 
 ## License
 

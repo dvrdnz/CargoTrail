@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import io
 import re
+import sys
+import sysconfig
 import tarfile
 import zipfile
 from pathlib import Path
@@ -31,6 +33,27 @@ def project_version() -> str:
     if not match:
         raise RuntimeError("Could not determine VERSION from the application entry point")
     return match.group(1)
+
+
+def python_license_path() -> Path:
+    """Return the license file shipped with the interpreter that is frozen into the executable.
+
+    scripts/build_binary.py freezes with ``sys.executable``, so this assumes that the
+    packaging step runs with the same interpreter.
+    """
+    candidates = (
+        Path(sysconfig.get_path("stdlib")) / "LICENSE.txt",
+        Path(sys.base_prefix) / "LICENSE.txt",
+        Path(sys.base_prefix) / "LICENSE",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find the Python license file; searched: {}".format(
+            ", ".join(str(candidate) for candidate in candidates)
+        )
+    )
 
 
 def main() -> int:
@@ -62,13 +85,19 @@ def main() -> int:
     missing_documents = [name for name in release_documents if not (ROOT / name).is_file()]
     if missing_documents:
         parser.error("Required release document(s) missing: {}".format(", ".join(missing_documents)))
+    try:
+        python_license = python_license_path()
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    documents = [(ROOT / name, name) for name in release_documents]
+    documents.append((python_license, "PYTHON-LICENSE.txt"))
 
     if is_windows:
         output = output_dir / (base_name + ".zip")
         with zipfile.ZipFile(str(output), "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             archive.write(str(executable), arcname="cargotrail.exe")
-            for name in release_documents:
-                archive.write(str(ROOT / name), arcname=name)
+            for source, arcname in documents:
+                archive.write(str(source), arcname=arcname)
             archive.writestr("SOURCE-CODE.txt", source_notice)
     else:
         output = output_dir / (base_name + ".tar.gz")
@@ -77,8 +106,8 @@ def main() -> int:
             info.mode = 0o755
             with executable.open("rb") as stream:
                 archive.addfile(info, stream)
-            for name in release_documents:
-                archive.add(str(ROOT / name), arcname=name, recursive=False)
+            for source, arcname in documents:
+                archive.add(str(source), arcname=arcname, recursive=False)
             source_info = tarfile.TarInfo("SOURCE-CODE.txt")
             source_info.size = len(source_notice)
             source_info.mode = 0o644
