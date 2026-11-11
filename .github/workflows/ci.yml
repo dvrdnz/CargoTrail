@@ -70,8 +70,8 @@ jobs:
       - name: Run unit, process-tree, and real-Cargo integration tests on Python 3.8
         run: uv run --no-project --python 3.8 python -m unittest discover -s tests -v
 
-  windows-linker-diagnostics:
-    name: Windows Cargo linker diagnostic / ${{ matrix.linker }}
+  windows-linker-tests:
+    name: Windows Cargo linker tests / ${{ matrix.linker }}
     runs-on: windows-2025
     # Both lanes gate: the test step exits with the unittest exit code for either
     # linker. MSVC is the default Windows linker, LLD is the control lane. Only a
@@ -189,7 +189,7 @@ jobs:
     # Runs for version tags (release) and for manual runs (dry run, nothing is published).
     name: Build / ${{ matrix.target }}
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [test, test-min-python, windows-linker-diagnostics]
+    needs: [test, test-min-python, windows-linker-tests]
     strategy:
       fail-fast: false
       matrix:
