@@ -97,7 +97,7 @@ A regular run produces these primary files:
 | `artifact-inventory.json` | Inventory, sizes, hashes, roles, and verification status of evidence files |
 | `config.redacted.json` | Normalized configuration with environment values and configured sensitive arguments redacted |
 | `runner.log` | Python-agent lifecycle and process-supervision log |
-| `steps/` | Per-step process output, Cargo events, diagnostics, and test summaries |
+| `<step-id>/` | One folder per configured step, named after its `id` and located directly in the evidence directory: process output, Cargo events, diagnostics, and test summaries |
 
 When archive creation is requested, the archive is verified against the finalized evidence tree. The sidecar records archive and inventory hashes. These are integrity checks, not signatures or authenticated attestations.
 
