@@ -23,7 +23,7 @@ Environment values are not copied into evidence as plain values. Sensitive argum
 
 ## Workspace inventory
 
-The before/after inventories record observed files and directories in the configured workspace. Regular files are hashed in fixed-size blocks, with file identity and metadata checked before and after reading. Symlinks, reparse points, special files, unreadable entries, and unstable entries are not followed as regular files. Cargo target/build directories and evidence output are excluded explicitly.
+The before/after inventories record observed files and directories in the configured workspace. Regular files are hashed in fixed-size blocks, with file identity and metadata checked before and after reading. Symlinks, reparse points, special files, unreadable entries, and unstable entries are not followed as regular files. Cargo target/build directories and evidence output are excluded explicitly. Exclusions are matched case-insensitively on Windows and macOS, where volumes are case-insensitive by default, and case-sensitively on other systems, so an exclusion never hides a differently cased directory there. This is a platform default, not a probe of the actual file system: a case-sensitive macOS volume or a case-insensitive mount on Linux is not detected.
 
 The inventory is an observation, not an atomic snapshot or filesystem lock. It covers the configured workspace only. Registry and Git sources, external path dependencies, Cargo caches, native tools, operating-system inputs, and network services are outside its scope.
 

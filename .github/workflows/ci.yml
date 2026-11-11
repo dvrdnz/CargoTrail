@@ -73,9 +73,11 @@ jobs:
   windows-linker-diagnostics:
     name: Windows Cargo linker diagnostic / ${{ matrix.linker }}
     runs-on: windows-2025
-    # The MSVC lane is an investigative, non-gating control while the
-    # vctip.exe behavior is characterized. Its test exit code and full log are
-    # retained as artifacts; the LLD lane remains gating.
+    # Both lanes gate: the test step exits with the unittest exit code for either
+    # linker. MSVC is the default Windows linker, LLD is the control lane. Only the
+    # previously affected real-Cargo tests run here; the full suite runs in the
+    # `test` job with LLD. Test logs and vctip.exe process snapshots are retained
+    # as artifacts.
     strategy:
       fail-fast: false
       matrix:

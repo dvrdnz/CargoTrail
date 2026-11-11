@@ -3142,23 +3142,46 @@ def prepare_exclusions(
     return exclusions
 
 
-def inventory_workspace(root: Path, exclusions: List[dict]) -> dict:
+# Windows and macOS volumes are case-insensitive by default. On Linux and other
+# POSIX systems "Target" and "target" are different directories, and an exclusion
+# for one must never hide the other from the workspace inventory. This is a
+# platform default, not a probe of the actual file system: case-sensitive APFS
+# volumes and case-insensitive mounts on Linux are not detected.
+_DEFAULT_CASE_INSENSITIVE_PATHS = os.name == "nt" or sys.platform == "darwin"
+
+
+def _inventory_path_key(value: str, case_insensitive: bool) -> str:
+    return value.casefold() if case_insensitive else value
+
+
+def inventory_workspace(
+    root: Path,
+    exclusions: List[dict],
+    case_insensitive: Optional[bool] = None,
+) -> dict:
+    """Inventory ``root``, skipping paths covered by the applied ``exclusions``.
+
+    ``case_insensitive`` selects how exclusions are matched against directory
+    entries; ``None`` uses the platform default.
+    """
     root = root.absolute()
+    if case_insensitive is None:
+        case_insensitive = _DEFAULT_CASE_INSENSITIVE_PATHS
     exclusion_paths = [
         PurePosixPath(item["path"]).as_posix().rstrip("/")
         for item in exclusions if item.get("applied")
     ]
+    exclude_everything = "." in exclusion_paths
+    excluded_keys = frozenset(_inventory_path_key(omit, case_insensitive) for omit in exclusion_paths)
+    excluded_prefixes = tuple(key + "/" for key in excluded_keys)
     entries: List[dict] = []
     issues: List[dict] = []
 
     def excluded(path: Path) -> bool:
-        relative = path.relative_to(root).as_posix().casefold()
-        return any(
-            relative == omit.casefold()
-            or omit == "."
-            or relative.startswith(omit.casefold() + "/")
-            for omit in exclusion_paths
-        )
+        if exclude_everything:
+            return True
+        relative = _inventory_path_key(path.relative_to(root).as_posix(), case_insensitive)
+        return relative in excluded_keys or relative.startswith(excluded_prefixes)
 
     def walk(directory: Path, expected=None, parent_fd=None, name=None, directory_record=None) -> None:
         try:

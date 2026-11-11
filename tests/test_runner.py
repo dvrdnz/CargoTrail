@@ -4991,6 +4991,76 @@ class RunnerUnitTests(unittest.TestCase):
             fingerprints = agent.manifest_file_fingerprints(root, inventory, inventory)
             self.assertEqual(fingerprints["Cargo.lock"]["before"]["status"], "not_present")
 
+    def _inventory_paths_excluding_lowercase_target(self, case_insensitive):
+        # Only "Target" exists on disk, so the result does not depend on whether the
+        # test file system is case-sensitive: matching is done on listed entry names.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "workspace"
+            (root / "Target").mkdir(parents=True)
+            (root / "Target" / "source.rs").write_bytes(b"source")
+            inventory = agent.inventory_workspace(
+                root, [{"path": "target", "applied": True}], case_insensitive=case_insensitive,
+            )
+            return {item["relative_path"] for item in inventory["entries"]}
+
+    def test_workspace_inventory_exclusion_is_case_sensitive_when_requested(self):
+        paths = self._inventory_paths_excluding_lowercase_target(case_insensitive=False)
+        self.assertIn("Target", paths)
+        self.assertIn("Target/source.rs", paths)
+
+    def test_workspace_inventory_exclusion_ignores_case_when_requested(self):
+        paths = self._inventory_paths_excluding_lowercase_target(case_insensitive=True)
+        self.assertNotIn("Target", paths)
+        self.assertNotIn("Target/source.rs", paths)
+
+    def test_workspace_inventory_default_case_sensitivity_follows_platform(self):
+        for platform_default in (False, True):
+            with self.subTest(platform_default=platform_default), \
+                    mock.patch.object(provenance, "_DEFAULT_CASE_INSENSITIVE_PATHS", platform_default):
+                paths = self._inventory_paths_excluding_lowercase_target(case_insensitive=None)
+                self.assertEqual("Target/source.rs" in paths, not platform_default)
+
+    def test_workspace_inventory_exclusion_does_not_hide_differently_cased_directory(self):
+        if provenance._DEFAULT_CASE_INSENSITIVE_PATHS:
+            self.skipTest("the platform default matches paths case-insensitively")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "workspace"
+            (root / "target").mkdir(parents=True)
+            if (root / "Target").exists():
+                self.skipTest("filesystem is case-insensitive")
+            (root / "Target").mkdir()
+            (root / "target" / "generated.bin").write_bytes(b"generated")
+            (root / "Target" / "source.rs").write_bytes(b"source")
+            inventory = agent.inventory_workspace(root, [{"path": "target", "applied": True}])
+            paths = {item["relative_path"] for item in inventory["entries"]}
+            self.assertNotIn("target/generated.bin", paths)
+            self.assertIn("Target", paths)
+            self.assertIn("Target/source.rs", paths)
+
+    def test_workspace_inventory_exclusion_matches_whole_path_components(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "workspace"
+            (root / "out" / "nested").mkdir(parents=True)
+            (root / "out2").mkdir()
+            (root / "out" / "nested" / "generated.bin").write_bytes(b"generated")
+            (root / "out2" / "source.rs").write_bytes(b"source")
+            for exclusion, hidden in (("out", True), ("out/nested", True), ("out/nes", False)):
+                with self.subTest(exclusion=exclusion):
+                    inventory = agent.inventory_workspace(
+                        root, [{"path": exclusion, "applied": True}], case_insensitive=False,
+                    )
+                    paths = {item["relative_path"] for item in inventory["entries"]}
+                    self.assertEqual("out/nested/generated.bin" not in paths, hidden)
+                    self.assertIn("out2/source.rs", paths)
+
+    def test_workspace_inventory_dot_exclusion_hides_every_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "workspace"
+            root.mkdir()
+            (root / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+            inventory = agent.inventory_workspace(root, [{"path": ".", "applied": True}])
+            self.assertEqual(inventory["entries"], [])
+
     def test_workspace_inventory_records_but_does_not_follow_external_symlinks(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
