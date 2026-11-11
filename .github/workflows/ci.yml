@@ -132,7 +132,6 @@ jobs:
           Get-Content -LiteralPath windows-diagnostics/toolchain.txt
           Get-Content -LiteralPath windows-diagnostics/vctip-before.json
       - name: Run the three previously affected real-Cargo tests
-        continue-on-error: ${{ matrix.linker == 'msvc' }}
         shell: pwsh
         run: |
           $tests = @(
@@ -145,7 +144,7 @@ jobs:
           $testExit = $LASTEXITCODE
           "test_exit_code=$testExit" | Add-Content windows-diagnostics/test-exit-code.txt
           if ($testExit -ne 0 -and $env:CARGOTRAIL_WINDOWS_LINKER -eq "msvc") {
-            "MSVC diagnostic returned exit code $testExit. This lane is intentionally non-gating while the vctip.exe behavior is characterized; inspect the uploaded cargo-integration-tests.log and process snapshots." |
+            "MSVC diagnostic returned exit code $testExit. The MSVC test lane is gating; inspect the uploaded cargo-integration-tests.log and process snapshots." |
               Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
           exit $testExit
