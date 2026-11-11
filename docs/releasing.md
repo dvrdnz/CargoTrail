@@ -22,7 +22,7 @@ A PyInstaller build is native to the operating system and architecture on which 
 
 A version tag triggers native builds for Linux x86-64, Linux ARM64, Windows x86-64, macOS Intel x86-64, and macOS Apple Silicon ARM64. Unix binaries are distributed in `.tar.gz` archives to preserve executable mode. The Windows executable is distributed in a `.zip` archive. A `SHA256SUMS.txt` file covers the release archives. Linux binaries are built on Ubuntu 24.04 and may not run on older distributions with an older glibc.
 
-The release workflow verifies that the pushed tag version matches the `VERSION` constant in `cargotrail.py`. It runs only after the platform test matrix succeeds.
+The release workflow verifies that the pushed tag version matches the `VERSION` constant in `cargotrail.py`. It runs only after the platform test matrix, the minimum-Python jobs, and both Windows linker lanes succeed.
 
 Each build job runs `scripts/smoke_test_binary.py` against the frozen executable. The script runs a real Cargo pipeline on a minimal crate, creates an evidence archive, and fails if the executable does not report all four runtime source files as hashed. A plain `--version` check would not catch missing bundled sources.
 
@@ -37,7 +37,7 @@ The workflow does not code-sign or notarize the binaries. Windows may display an
 1. Update `VERSION` in `cargotrail.py`.
 2. Add a user-facing entry to `CHANGELOG.md`.
 3. Run the tests locally and review the diff.
-4. Commit and push to the default branch. Wait until the full test matrix, including the Python 3.8 jobs, is green.
+4. Commit and push to the default branch. Wait until the full test matrix, including the Python 3.8 jobs and both Windows linker lanes, is green.
 5. Start the dry run: **Actions → CI and Release → Run workflow** on the default branch. All five build jobs must succeed.
 6. Create and push an annotated version tag matching the application version, for example:
 
