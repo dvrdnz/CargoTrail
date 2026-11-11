@@ -74,8 +74,9 @@ jobs:
     name: Windows Cargo linker diagnostic / ${{ matrix.linker }}
     runs-on: windows-2025
     # Both lanes gate: the test step exits with the unittest exit code for either
-    # linker. MSVC is the default Windows linker, LLD is the control lane. Only the
-    # previously affected real-Cargo tests run here; the full suite runs in the
+    # linker. MSVC is the default Windows linker, LLD is the control lane. Only a
+    # selected set of real-Cargo tests runs here (the three previously affected
+    # tests plus the intentional test-failure case); the full suite runs in the
     # `test` job with LLD. Test logs and vctip.exe process snapshots are retained
     # as artifacts.
     strategy:
@@ -133,13 +134,14 @@ jobs:
           Set-Content -LiteralPath windows-diagnostics/vctip-before.json -Value $snapshotJson -Encoding utf8
           Get-Content -LiteralPath windows-diagnostics/toolchain.txt
           Get-Content -LiteralPath windows-diagnostics/vctip-before.json
-      - name: Run the three previously affected real-Cargo tests
+      - name: Run the selected real-Cargo tests
         shell: pwsh
         run: |
           $tests = @(
             "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_success_check_test_and_build",
             "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_build_detects_workspace_change_without_changing_pipeline_status",
-            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_zero_test_summary_requires_explicit_allowance"
+            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_zero_test_summary_requires_explicit_allowance",
+            "tests.test_cargo_integration.RealCargoIntegrationTests.test_real_cargo_test_failure_is_failed_and_test_failure_is_observed"
           )
           & python -m unittest -v @tests 2>&1 |
             Tee-Object -FilePath windows-diagnostics/cargo-integration-tests.log
