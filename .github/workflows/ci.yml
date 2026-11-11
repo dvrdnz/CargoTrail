@@ -84,9 +84,6 @@ jobs:
       CARGO_INTEGRATION_REQUIRED: "1"
       CARGO_NET_OFFLINE: "true"
       CARGOTRAIL_WINDOWS_LINKER: ${{ matrix.linker }}
-      # vctip.exe may drain after the leader exits; 20s tests natural shutdown
-      # without exempting it from strict Job Object cleanup verification.
-      CARGOTRAIL_TEST_TERMINATION_GRACE_SECONDS: ${{ matrix.linker == 'msvc' && '20' || '3' }}
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v7

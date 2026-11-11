@@ -66,6 +66,37 @@ class CancellationContext:
             self.signal_number = signal_number
 
 
+def _is_expected_msvc_vctip_member(member: Dict[str, Any]) -> bool:
+    """Identify only the VCTIP executable inside a Visual Studio MSVC toolset.
+
+    The basename alone is not sufficient: arbitrary ``vctip.exe`` files must
+    remain ordinary unexpected descendants.  The full image path must match
+    the installed Visual Studio ``VC\\Tools\\MSVC\\<version>\\bin\\Hostx64\\x64``
+    layout used by the MSVC x64 toolchain.
+    """
+    if str(member.get("name", "")).casefold() != "vctip.exe":
+        return False
+    image_path = member.get("image_path")
+    if not isinstance(image_path, str) or not ntpath.isabs(image_path):
+        return False
+
+    parts = ntpath.normcase(ntpath.normpath(image_path)).split("\\")
+    if len(parts) < 11 or parts[-8] != "vc" or parts[-7:-5] != ["tools", "msvc"]:
+        return False
+    if parts[-4:] != ["bin", "hostx64", "x64", "vctip.exe"]:
+        return False
+    # Require the canonical Visual Studio instance layout immediately before
+    # VC\Tools\MSVC: Microsoft Visual Studio\<instance>\<edition>.
+    vc_index = len(parts) - 8
+    return (
+        vc_index >= 3
+        and parts[vc_index - 3] == "microsoft visual studio"
+        and bool(parts[vc_index - 2])
+        and bool(parts[vc_index - 1])
+        and bool(parts[vc_index + 3])
+    )
+
+
 def _cancellation_reason(cancellation: Any) -> Tuple[Optional[int], Optional[str]]:
     if cancellation is None:
         return None, None
@@ -965,7 +996,8 @@ class _WindowsJob:
         except Exception as exc:
             return {
                 "supervision": "windows-job-object", "trigger": "verification-error",
-                "descendants_detected": None, "term_signal_sent": False, "kill_signal_sent": False,
+                "descendants_detected": None, "unexpected_descendants_detected": None,
+                "term_signal_sent": False, "kill_signal_sent": False,
                 "cleanup_complete": False, "active_members_after_cleanup": None,
                 "root_process_exited": process.returncode is not None, "job_empty": False,
                 "cleanup_verified": False, "errors": [str(exc)],
@@ -979,6 +1011,8 @@ class _WindowsJob:
                     "Windows Job Object drain check failed after leader exit: pid=%s error=%s",
                     process.pid, exc,
                 )
+
+        members = None
         if active:
             try:
                 members = self.active_process_details()
@@ -994,12 +1028,43 @@ class _WindowsJob:
         if active == 0:
             return {
                 "supervision": "windows-job-object", "trigger": None,
-                "descendants_detected": False, "term_signal_sent": False, "kill_signal_sent": False,
+                "descendants_detected": False, "unexpected_descendants_detected": False,
+                "term_signal_sent": False, "kill_signal_sent": False,
                 "cleanup_complete": process.returncode is not None, "active_members_after_cleanup": 0,
                 "root_process_exited": process.returncode is not None, "job_empty": True,
                 "cleanup_verified": process.returncode is not None, "errors": [],
             }
-        return self.terminate_tree(process, grace_seconds, "orphaned-descendants")
+
+        # MSVC's VCTIP telemetry uploader is a documented long-lived child of
+        # compiler tooling.  Do not let that one known ancillary image turn an
+        # otherwise successful Cargo command into an orphan-process failure.
+        # It is NOT allowed to break away: terminate the Job Object and require
+        # the same root-exit and empty-job verification as every other cleanup.
+        # The exception applies only when every remaining member is the VCTIP
+        # binary inside the installed Visual Studio x64 MSVC toolset directory.
+        if members and all(_is_expected_msvc_vctip_member(member) for member in members):
+            LOGGER.warning(
+                "Windows Job Object contains only recognized MSVC VCTIP ancillary processes after leader exit; "
+                "terminating and verifying them: pid=%s members=%s",
+                process.pid, members,
+            )
+            tree = self.terminate_tree(process, 0.0, "expected-ancillary-process")
+            tree["descendants_detected"] = True
+            tree["unexpected_descendants_detected"] = False
+            tree["expected_ancillary_processes_detected"] = True
+            tree["expected_ancillary_processes"] = [
+                {
+                    "pid": member.get("pid"),
+                    "name": member.get("name"),
+                    "image_path": member.get("image_path"),
+                }
+                for member in members
+            ]
+            return tree
+
+        tree = self.terminate_tree(process, grace_seconds, "orphaned-descendants")
+        tree["unexpected_descendants_detected"] = True
+        return tree
 
     def close(self) -> List[str]:
         if not self.handle:
@@ -1720,7 +1785,9 @@ def run_supervised_process(
                             "cleanup_verified": tree.get("cleanup_verified", tree.get("cleanup_complete", False)),
                         })
                         tree["startup"] = dict(result["startup"] or {})
-                    result["orphan_processes_detected"] = bool(tree.get("descendants_detected"))
+                    result["orphan_processes_detected"] = bool(
+                        tree.get("unexpected_descendants_detected", tree.get("descendants_detected"))
+                    )
                 except subprocess.TimeoutExpired:
                     LOGGER.warning("Supervised subprocess timeout: pid=%s timeout_seconds=%s", process.pid, timeout)
                     result["timed_out"] = True

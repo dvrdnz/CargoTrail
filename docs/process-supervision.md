@@ -26,7 +26,9 @@ Each command receives its own Windows Job Object configured with `JOB_OBJECT_LIM
 
 If Job assignment is unavailable, the runner refuses to start an unsupervised process. It does not fall back to supervising only the Cargo parent.
 
-The ordinary Windows real-Cargo test suite selects LLVM `lld-link` explicitly as its control linker through Cargo's target-specific linker environment variable. A separate `windows-linker-diagnostics` CI matrix runs the three previously affected real-Cargo tests with both the native MSVC default linker and `lld-link`. The MSVC lane is currently non-gating while the `vctip.exe` behavior is characterized; its result and diagnostic artifact remain visible. The LLD lane is gating. Both variants use the same tests and the same strict Job Object supervision.
+The ordinary Windows real-Cargo test suite selects LLVM `lld-link` explicitly as its control linker through Cargo's target-specific linker environment variable. A separate `windows-linker-diagnostics` CI matrix runs the three previously affected real-Cargo tests with both the native MSVC default linker and `lld-link`. The MSVC lane remains non-gating while its known ancillary-process handling is verified; its result and diagnostic artifact remain visible. The LLD lane is gating. Both variants use the same tests and Job Object containment.
+
+Microsoft's BuildXL source documents `VCTIP.EXE` as a surviving child process that MSVC compiler tooling (`cl.exe`) may create. CargoTrail recognizes only the executable at the canonical Visual Studio x64 MSVC toolset path (`Microsoft Visual Studio\<instance>\<edition>\VC\Tools\MSVC\<version>\bin\Hostx64\x64\vctip.exe`). If, after the leader exits, every remaining Job Object member matches that exact image layout, CargoTrail classifies them as expected ancillary processes, terminates the Job Object, and still requires the root process to be reaped and the Job Object to be empty. These processes do not break away or survive cleanup. Any additional, unrecognized, or unverifiable member remains an unexpected orphan and causes the command to fail.
 
 When a Job Object remains non-empty after the Cargo leader exits and the drain window expires, the supervisor logs every active member with its PID, parent PID when available, executable basename and full image path, process creation timestamp in UTC when available, observation timestamp, and active Job Object membership. Parent PID and process creation time are best-effort diagnostic metadata only. A zero-time process-handle wait reports whether the process handle is still active or signaled when `SYNCHRONIZE` access is granted; otherwise the state is recorded as unavailable. This is not a scheduler run/wait state. None of these fields affects the authoritative Job Object process list or cleanup decision. The Windows CI diagnostic job also archives toolchain discovery and before/after `vctip.exe` process snapshots. None of this exempts a process from Job Object supervision or changes the production linker selection.
 
@@ -35,7 +37,8 @@ When a Job Object remains non-empty after the Cargo leader exits and the drain w
 | Situation | Step status |
 |---|---|
 | Exit code is zero and no descendants remain | `passed`, subject to evidence requirements |
-| Command exits but leaves descendants that are then cleaned up | `failed` |
+| Exit code is zero and only canonical MSVC VCTIP ancillary processes remain; they are terminated and Job Object emptiness is verified | `passed`, subject to evidence requirements |
+| Command exits but leaves other or unverifiable descendants that are then cleaned up | `failed` |
 | Timeout and cleanup is verified | `timed_out` |
 | User interruption and cleanup is verified | `interrupted` |
 | Process could not be started | `launch_error` |

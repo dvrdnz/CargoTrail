@@ -330,6 +330,107 @@ class WindowsSupervisorUnitTests(unittest.TestCase):
         self.assertEqual(snapshot[4321], {"parent_pid": 1200, "name": "cl.exe"})
         self.assertEqual(fake_kernel32.closed, [77])
 
+    def test_expected_msvc_vctip_requires_exact_visual_studio_toolset_path(self):
+        trusted = {
+            "name": "vctip.exe",
+            "image_path": (
+                r"C:\Program Files\Microsoft Visual Studio\18\Enterprise"
+                r"\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\vctip.exe"
+            ),
+        }
+        self.assertTrue(supervision._is_expected_msvc_vctip_member(trusted))
+        self.assertFalse(supervision._is_expected_msvc_vctip_member({
+            "name": "vctip.exe", "image_path": r"C:\temp\vctip.exe",
+        }))
+        self.assertFalse(supervision._is_expected_msvc_vctip_member({
+            "name": "other.exe", "image_path": trusted["image_path"],
+        }))
+        self.assertFalse(supervision._is_expected_msvc_vctip_member({
+            "name": "vctip.exe",
+            "image_path": (
+                r"C:\Program Files\Microsoft Visual Studio\18\Enterprise"
+                r"\VC\Tools\Llvm\bin\Hostx64\x64\vctip.exe"
+            ),
+        }))
+        self.assertFalse(supervision._is_expected_msvc_vctip_member({
+            "name": "vctip.exe", "image_path": None,
+        }))
+
+    def test_after_leader_exit_terminates_only_trusted_msvc_vctip_without_orphan_failure(self):
+        member = {
+            "pid": 8675,
+            "parent_pid": 4321,
+            "name": "vctip.exe",
+            "image_path": (
+                r"C:\Program Files\Microsoft Visual Studio\18\Enterprise"
+                r"\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\vctip.exe"
+            ),
+            "process_handle_state": "active",
+            "job_membership": "active",
+        }
+        job = object.__new__(supervision._WindowsJob)
+        job.active_processes = mock.Mock(return_value=1)
+        job.wait_empty = mock.Mock(return_value=False)
+        job.active_process_details = mock.Mock(return_value=[member])
+        job.terminate_tree = mock.Mock(return_value={
+            "supervision": "windows-job-object",
+            "trigger": "expected-ancillary-process",
+            "cleanup_complete": True,
+            "cleanup_verified": True,
+            "root_process_exited": True,
+            "job_empty": True,
+            "active_members_after_cleanup": 0,
+            "errors": [],
+        })
+        process = FakeProcess()
+        process.returncode = 0
+
+        tree = job.after_leader_exit(process, 3.0)
+
+        job.terminate_tree.assert_called_once_with(process, 0.0, "expected-ancillary-process")
+        self.assertTrue(tree["descendants_detected"])
+        self.assertFalse(tree["unexpected_descendants_detected"])
+        self.assertTrue(tree["expected_ancillary_processes_detected"])
+        self.assertEqual(tree["expected_ancillary_processes"], [{
+            "pid": 8675,
+            "name": "vctip.exe",
+            "image_path": member["image_path"],
+        }])
+        self.assertTrue(tree["cleanup_complete"])
+        self.assertTrue(tree["job_empty"])
+
+    def test_after_leader_exit_keeps_unknown_member_as_orphan_failure_with_vctip(self):
+        vctip = {
+            "pid": 8675, "name": "vctip.exe",
+            "image_path": (
+                r"C:\Program Files\Microsoft Visual Studio\18\Enterprise"
+                r"\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\vctip.exe"
+            ),
+        }
+        other = {"pid": 8676, "name": "rustc.exe", "image_path": r"C:\Rust\bin\rustc.exe"}
+        job = object.__new__(supervision._WindowsJob)
+        job.active_processes = mock.Mock(return_value=2)
+        job.wait_empty = mock.Mock(return_value=False)
+        job.active_process_details = mock.Mock(return_value=[vctip, other])
+        job.terminate_tree = mock.Mock(return_value={
+            "supervision": "windows-job-object",
+            "trigger": "orphaned-descendants",
+            "cleanup_complete": True,
+            "cleanup_verified": True,
+            "root_process_exited": True,
+            "job_empty": True,
+            "active_members_after_cleanup": 0,
+            "errors": [],
+        })
+        process = FakeProcess()
+        process.returncode = 0
+
+        tree = job.after_leader_exit(process, 3.0)
+
+        job.terminate_tree.assert_called_once_with(process, 3.0, "orphaned-descendants")
+        self.assertTrue(tree["unexpected_descendants_detected"])
+        self.assertNotIn("expected_ancillary_processes_detected", tree)
+
     def test_after_leader_exit_allows_job_children_to_finish_naturally(self):
         job = object.__new__(supervision._WindowsJob)
         job.active_processes = mock.Mock(return_value=1)

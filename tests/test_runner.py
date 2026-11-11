@@ -3039,6 +3039,61 @@ class RunnerUnitTests(unittest.TestCase):
             self.assertEqual(record["status"], "failed")
             self.assertTrue(record["orphan_processes_detected"])
 
+    def test_verified_vctip_ancillary_cleanup_does_not_fail_successful_step(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "Cargo.toml").write_text(
+                '[package]\nname="x"\nversion="0.1.0"\n', encoding="utf-8",
+            )
+            output = root / "evidence"
+            output.mkdir()
+            step = {
+                "id": "run", "args": ["run"], "parser": "text", "cwd": ".",
+                "timeout_seconds": None, "environment": {}, "unset_environment": [],
+                "redact_arg_indexes": [],
+            }
+            execution = {
+                "default_timeout_seconds": 10, "termination_grace_seconds": 3,
+                "environment": {}, "unset_environment": [],
+            }
+            result = {
+                "exit_code": 0, "native_exit_code": 0, "interrupted": False, "timed_out": False,
+                "duration_ms": 20, "spawn_error": None, "supervision_error": None,
+                "orphan_processes_detected": False,
+                "process_tree": {
+                    "supervision": "windows-job-object",
+                    "trigger": "expected-ancillary-process",
+                    "descendants_detected": True,
+                    "unexpected_descendants_detected": False,
+                    "expected_ancillary_processes_detected": True,
+                    "expected_ancillary_processes": [{
+                        "pid": 1234, "name": "vctip.exe",
+                        "image_path": (
+                            r"C:\Program Files\Microsoft Visual Studio\18\Enterprise"
+                            r"\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\vctip.exe"
+                        ),
+                    }],
+                    "cleanup_complete": True, "cleanup_verified": True,
+                    "active_members_after_cleanup": 0, "job_empty": True,
+                },
+            }
+
+            def fake_run(*args, **kwargs):
+                args[3].write_bytes(b"")
+                args[4].write_bytes(b"")
+                return result
+
+            with mock.patch.object(agent, "run_process", side_effect=fake_run):
+                record = agent.process_step("cargo", step, workspace, output, {}, execution)
+
+            self.assertEqual(record["status"], "passed")
+            self.assertTrue(record["process_tree"]["descendants_detected"])
+            self.assertFalse(record["orphan_processes_detected"])
+            self.assertTrue(record["process_tree"]["cleanup_complete"])
+            self.assertTrue(record["process_tree"]["job_empty"])
+
     def test_unverified_tree_cleanup_is_never_reported_as_passed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
