@@ -25,6 +25,7 @@ This changelog records user-visible changes.
 
 - Adopted the Mozilla Public License 2.0 (MPL-2.0) for original project files and added SPDX/Exhibit A source notices.
 - Added a third-party dependency and licensing inventory.
+- Added a security policy (`SECURITY.md`).
 - Included license documents, the license of the bundled Python runtime (`PYTHON-LICENSE.txt`), and an exact source-tag pointer in platform release archives. Packaging fails if the Python license file cannot be found.
 - Regression coverage for Cargo `fmt` and `clippy` classification on newer Cargo versions.
 - Fault-injection coverage for file and writer descriptor cleanup and directory-handle close behavior.
