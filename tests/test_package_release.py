@@ -70,7 +70,9 @@ class PackageReleaseArchiveTests(unittest.TestCase):
             (root / name).write_text(name + "\n", encoding="utf-8")
         (root / "dist" / ("cargotrail.exe" if windows else "cargotrail")).write_bytes(b"binary")
         license_file = Path(temp) / "python-license.txt"
-        license_file.write_text(LICENSE_TEXT, encoding="utf-8")
+        # Write bytes: text mode would turn "\n" into "\r\n" on Windows and the archive
+        # content comparison below would no longer match.
+        license_file.write_bytes(LICENSE_TEXT.encode("utf-8"))
         return root, license_file
 
     def _package(self, root, target, license_lookup):
