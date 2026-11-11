@@ -21,6 +21,8 @@ The configuration's parser and evidence requirements determine which signals are
 
 Environment values are not copied into evidence as plain values. Sensitive argument positions are redacted. Environment names suggesting tokens, passwords, secrets, keys, credentials, or authentication are redacted; registry URL credentials and sensitive query values are also redacted. The PATH value is represented by a digest and entry count.
 
+Process output (the stdout and stderr of Cargo, build scripts, and tests) is stored verbatim in the step folders and is not redacted. A build script that prints a secret leaves it in the evidence, so handle evidence directories, archives, and uploaded CI artifacts as potentially sensitive.
+
 ## Workspace inventory
 
 The before/after inventories record observed files and directories in the configured workspace. Regular files are hashed in fixed-size blocks, with file identity and metadata checked before and after reading. Symlinks, reparse points, special files, unreadable entries, and unstable entries are not followed as regular files. Cargo target/build directories and evidence output are excluded explicitly. Exclusions are matched case-insensitively on Windows and macOS, where volumes are case-insensitive by default, and case-sensitively on other systems, so an exclusion never hides a differently cased directory there. This is a platform default, not a probe of the actual file system: a case-sensitive macOS volume or a case-insensitive mount on Linux is not detected.

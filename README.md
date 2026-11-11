@@ -107,6 +107,8 @@ Each configured command is supervised as a process tree. On POSIX, the agent use
 
 This is **not a sandbox**. A POSIX descendant that deliberately creates a new session can leave the supervised session. Build scripts and native tools execute with the permissions of the user running the agent. Run untrusted projects inside an OS sandbox, container with appropriate restrictions, or virtual machine.
 
+Process output (the stdout and stderr of Cargo, build scripts, and tests) is stored verbatim in the step folders and is **not redacted**. Redaction applies only to the agent's own metadata, so a build script that prints a secret leaves it in the evidence. Handle evidence directories, archives, and uploaded CI artifacts as potentially sensitive.
+
 More detail is available in [Process supervision](docs/process-supervision.md) and [Evidence, provenance, and integrity](docs/evidence-and-integrity.md).
 
 ## Run tests
