@@ -5061,6 +5061,12 @@ class RunnerUnitTests(unittest.TestCase):
             inventory = agent.inventory_workspace(root, [{"path": ".", "applied": True}])
             self.assertEqual(inventory["entries"], [])
 
+    def test_exit_code_distinguishes_technical_errors_from_failures(self):
+        self.assertEqual(agent.exit_code_for_status("passed"), 0)
+        self.assertEqual(agent.exit_code_for_status("failed"), 1)
+        self.assertEqual(agent.exit_code_for_status("incomplete"), 1)
+        self.assertEqual(agent.exit_code_for_status("error"), 2)
+
     def test_workspace_inventory_records_but_does_not_follow_external_symlinks(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

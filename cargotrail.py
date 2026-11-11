@@ -2760,6 +2760,13 @@ def dry_run(config: dict, root: Path, invocation_context: Optional[dict] = None)
     sys.stdout.flush()
 
 
+def exit_code_for_status(status: str) -> int:
+    """Map the overall run status to the process exit code: 0 passed, 1 failed or incomplete, 2 error."""
+    if status == "passed":
+        return 0
+    return 2 if status == "error" else 1
+
+
 def _main(argv: Optional[List[str]] = None, cancellation_context: Any = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run only the Cargo commands declared in a JSON configuration; no default pipeline exists."
@@ -2863,7 +2870,7 @@ def _main(argv: Optional[List[str]] = None, cancellation_context: Any = None) ->
         number = getattr(cancellation_context, "signal_number", None) if cancellation_context else None
         number = number or getattr(preflight_outcome, "signal_number", None)
         return 128 + (number if number is not None else getattr(signal, "SIGINT", 2))
-    exit_code = 0 if summary["status"] == "passed" else 1
+    exit_code = exit_code_for_status(summary["status"])
     LOGGER.info("Python agent run ended; status=%s exit_code=%d", summary["status"], exit_code)
     return exit_code
 

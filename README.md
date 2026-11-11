@@ -76,6 +76,15 @@ The output directory must not already contain files. A run creates structured JS
 
 The `--dry-run` and `--validate-config` modes still perform Cargo version preflight for each enabled step. They do not execute configured build, test, formatter, alias-target, or custom subcommands.
 
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The run completed and every enabled step passed. `--validate-config` and `--dry-run` also exit `0` on success. |
+| `1` | The run completed but the overall status is `failed` (for example a Cargo command or a test failed) or `incomplete` (required evidence is missing, such as a zero-test result that is not allowed). |
+| `2` | The overall status is `error`: invalid configuration or failed preflight, a non-empty output directory, a command that could not be started, a supervision or process-cleanup failure, invalid Cargo evidence, a step timeout, or an archive failure. |
+| `128 + N` | The run was interrupted by signal `N` (on POSIX, `130` for `SIGINT` and `143` for `SIGTERM`). Partial evidence is retained. |
+
 ## Configuration
 
 A pipeline is a JSON object with a required `schema_version`, `workspace_root`, and non-empty `steps` array. Each step declares its own ID, exact Cargo argument array, parser, working directory, and optional timeout and evidence requirements. `execution` controls the Cargo executable, timeouts, environment, and whether ordinary failed steps allow later steps to continue. An optional `profile` identifies a versioned execution definition; it does not introduce inheritance or a second pipeline format.

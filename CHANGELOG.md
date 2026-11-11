@@ -7,6 +7,7 @@ This changelog records user-visible changes.
 ### Changed
 
 - Renamed the project and command-line application to CargoTrail.
+- The process exit code is now `2` for every run whose overall status is `error` (start, supervision, process-cleanup, evidence-parser, timeout, and archive failures). Previously only timeouts and archive failures exited with `2`, while the other technical errors exited with `1` like an ordinary failure.
 - Matched workspace-inventory exclusions case-insensitively on Windows and macOS and case-sensitively on other systems. This is a platform default, not a probe of the actual file system, so case-sensitive macOS volumes and case-insensitive mounts on Linux are not detected.
 - Canonicalized Cargo configuration file paths by expanding Windows short (8.3) names and resolving aliased parent directories on POSIX systems (for example `/var` on macOS). A symlinked configuration file is still detected as a symlink.
 
