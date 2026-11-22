@@ -31,7 +31,7 @@ import process_supervision as supervision
 
 
 def _pid_is_running(pid):
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith(("linux", "android")):
         try:
             stat = Path("/proc") / str(pid) / "stat"
             raw = stat.read_text(encoding="utf-8")
@@ -721,8 +721,31 @@ def _mock_darwin_pid_probe_platform():
     fake_sys = type("DarwinSys", (), {"platform": "darwin"})()
     return mock.patch.dict(_pid_is_running.__globals__, {"os": fake_os, "sys": fake_sys})
 
+def _mock_android_pid_probe(stat_text):
+    """Select Android's /proc PID-probe branch with a controlled stat row."""
+    fake_sys = type("AndroidSys", (), {"platform": "android"})()
+    stat_file = mock.Mock()
+    stat_file.read_text.return_value = stat_text
+    proc_root = mock.MagicMock()
+    proc_pid = mock.MagicMock()
+    proc_root.__truediv__.return_value = proc_pid
+    proc_pid.__truediv__.return_value = stat_file
+    fake_path = mock.Mock(return_value=proc_root)
+    return mock.patch.dict(
+        _pid_is_running.__globals__,
+        {"Path": fake_path, "sys": fake_sys},
+    )
+
 
 class RunnerUnitTests(unittest.TestCase):
+    def test_android_pid_probe_treats_zombie_as_exited(self):
+        with _mock_android_pid_probe("43210 (child process) Z 1 2 3\n"):
+            self.assertFalse(_pid_is_running(43210))
+
+    def test_android_pid_probe_treats_live_state_as_running(self):
+        with _mock_android_pid_probe("43210 (child process) S 1 2 3\n"):
+            self.assertTrue(_pid_is_running(43210))
+
     def test_darwin_pid_probe_treats_zombie_as_exited(self):
         with _mock_darwin_pid_probe_platform(), \
                 mock.patch.object(supervision.subprocess, "run") as run:
@@ -3961,7 +3984,8 @@ class RunnerUnitTests(unittest.TestCase):
             for pid in child_pids:
                 self.assertFalse(_pid_is_running(pid), "descendant {} survived cleanup".format(pid))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc session enumeration is Linux-specific")
+
+    @unittest.skipUnless(sys.platform.startswith(("linux", "android")), "requires Linux or Android POSIX session enumeration",)
     def test_descendant_that_changes_process_group_but_not_session_is_killed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
