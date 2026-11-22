@@ -5,7 +5,7 @@
 The source application has no third-party runtime dependencies. PyInstaller is used only to package the Python interpreter and application into a native single-file executable.
 
 ```bash
-python -m pip install -r requirements-build.txt
+python scripts/install_build_dependencies.py
 python scripts/build_binary.py --clean
 ```
 

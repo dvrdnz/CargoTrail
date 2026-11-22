@@ -22,7 +22,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if importlib.util.find_spec("PyInstaller") is None:
-        parser.error("PyInstaller is not installed; run: python -m pip install -r requirements-build.txt")
+        parser.error("PyInstaller is not installed; run: python scripts/install_build_dependencies.py")
 
     command = [
         sys.executable,

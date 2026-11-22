@@ -212,7 +212,7 @@ jobs:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
       - name: Install pinned build dependency
-        run: python -m pip install -r requirements-build.txt
+        run: python scripts/install_build_dependencies.py
       - name: Build one-file executable
         run: python scripts/build_binary.py --clean
       - name: Smoke-test executable
