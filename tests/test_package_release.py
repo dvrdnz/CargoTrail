@@ -172,6 +172,9 @@ class PackageReleaseArchiveTests(unittest.TestCase):
             with zipfile.ZipFile(str(root / "release" / "cargotrail-v9.9.9-windows-x86_64.zip")) as archive:
                 self.assertEqual(set(archive.namelist()), DOCUMENT_NAMES | {"cargotrail.exe"})
                 self.assertEqual(archive.read("PYTHON-LICENSE.txt").decode("utf-8"), LICENSE_TEXT)
+                source_notice = archive.read("SOURCE-CODE.txt").decode("utf-8")
+                self.assertIn(SOURCE_URL, source_notice)
+                self.assertIn("Release: v9.9.9", source_notice)
 
     def test_missing_python_license_fails_without_creating_an_archive(self):
         def missing():
