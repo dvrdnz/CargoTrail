@@ -58,6 +58,12 @@ def python_license_path() -> Path:
     )
 
 
+def _release_document_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Normalize permissions for documentation in Unix release archives."""
+    info.mode = 0o644
+    return info
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, choices=sorted(VALID_TARGETS))
@@ -109,7 +115,12 @@ def main() -> int:
             with executable.open("rb") as stream:
                 archive.addfile(info, stream)
             for source, arcname in documents:
-                archive.add(str(source), arcname=arcname, recursive=False)
+                archive.add(
+                    str(source),
+                    arcname=arcname,
+                    recursive=False,
+                    filter=_release_document_tar_filter,
+                )
             source_info = tarfile.TarInfo("SOURCE-CODE.txt")
             source_info.size = len(source_notice)
             source_info.mode = 0o644

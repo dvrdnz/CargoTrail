@@ -133,16 +133,27 @@ class PackageReleaseArchiveTests(unittest.TestCase):
                 self.assertEqual(set(archive.getnames()), DOCUMENT_NAMES | {"cargotrail"})
                 self.assertEqual(archive.extractfile("PYTHON-LICENSE.txt").read().decode("utf-8"), LICENSE_TEXT)
 
-    def test_termux_archive_contains_the_python_license_and_executable_mode(self):
+    def test_termux_archive_normalizes_document_modes_and_keeps_executable_mode(self):
         with tempfile.TemporaryDirectory() as temp:
             root, license_file = self._prepare_root(temp, windows=False)
+
+            # Simulate the restrictive permissions found on the Termux license.
+            license_file.chmod(0o600)
+
             status, _ = self._package(root, "termux-aarch64", lambda: license_file)
             self.assertEqual(status, 0)
 
-            archive_path = root / "release" / "cargotrail-v9.9.9-termux-aarch64.tar.gz"
+            archive_path = (
+                root / "release" / "cargotrail-v9.9.9-termux-aarch64.tar.gz"
+            )
             with tarfile.open(str(archive_path)) as archive:
                 self.assertEqual(set(archive.getnames()), DOCUMENT_NAMES | {"cargotrail"})
                 self.assertEqual(archive.getmember("cargotrail").mode, 0o755)
+
+                for name in DOCUMENT_NAMES:
+                    with self.subTest(name=name):
+                        self.assertEqual(archive.getmember(name).mode, 0o644)
+
                 self.assertEqual(
                     archive.extractfile("PYTHON-LICENSE.txt").read().decode("utf-8"),
                     LICENSE_TEXT,
