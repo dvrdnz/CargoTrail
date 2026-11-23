@@ -271,7 +271,7 @@ jobs:
           repository="$4"
 
           pkg update
-          pkg install -y python python-pip clang make rust
+          pkg install -y python python-pip clang make rust ldd
 
           python --version
           cargo --version
