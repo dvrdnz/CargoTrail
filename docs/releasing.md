@@ -13,20 +13,23 @@ The output is written to `dist/`:
 
 - Linux/macOS: `dist/cargotrail`
 - Windows: `dist/cargotrail.exe`
+- Termux (AArch64): `dist/cargotrail`
 
 The PyInstaller specification includes the four runtime source files as bundle data. This is required because the provenance report hashes these source files at runtime; a frozen binary must not report them as missing.
 
 A PyInstaller build is native to the operating system and architecture on which it runs. Do not build a Windows executable on Linux or a macOS executable on Windows. Use native runners or machines for each release target.
 
+The Termux AArch64 target is built on a GitHub-hosted ARM64 runner inside the pinned official [Termux Docker environment](https://github.com/termux/termux-docker). The image provides the Termux/Bionic userspace, but not Android runtime components such as DalvikVM or OpenSLES. Its CI smoke test verifies the executable in that userspace; it does not replace testing on an Android device for functionality that requires Android framework components.
+
 ## Release targets
 
-A version tag triggers native builds for Linux x86-64, Linux ARM64, Windows x86-64, macOS Intel x86-64, and macOS Apple Silicon ARM64. Unix binaries are distributed in `.tar.gz` archives to preserve executable mode. The Windows executable is distributed in a `.zip` archive. A `SHA256SUMS.txt` file covers the release archives. Linux binaries are built on Ubuntu 24.04 and may not run on older distributions with an older glibc.
+A version tag triggers builds for Linux x86-64, Linux ARM64, Windows x86-64, macOS Intel x86-64, macOS Apple Silicon ARM64, and Termux AArch64. The Termux target is built in the pinned Termux/Bionic Docker environment on an ARM64 GitHub-hosted runner. Unix and Termux binaries are distributed in `.tar.gz` archives to preserve executable mode. The Windows executable is distributed in a `.zip` archive. A `SHA256SUMS.txt` file covers all release archives. Linux binaries are built on Ubuntu 24.04 and may not run on older distributions with an older glibc.
 
 The release workflow verifies that the pushed tag version matches the `VERSION` constant in `cargotrail.py`. It runs only after the platform test matrix, the minimum-Python jobs, and both Windows linker lanes succeed.
 
 Each build job runs `scripts/smoke_test_binary.py` against the frozen executable. The script runs a real Cargo pipeline on a minimal crate, creates an evidence archive, and fails if the executable does not report all four runtime source files as hashed. A plain `--version` check would not catch missing bundled sources.
 
-The same build-and-package chain can be started by hand with **Actions → CI and Release → Run workflow**. A manual run builds, smoke-tests, and packages all five targets but does not create a release, so it is the recommended dry run before tagging.
+The same build-and-package chain can be started by hand with **Actions → CI and Release → Run workflow**. A manual run builds, smoke-tests, and packages all six targets but does not create a release, so it is the recommended dry run before tagging.
 
 The release is created as a **draft**. Nothing is public until a maintainer reviews and publishes it (see below).
 
@@ -38,7 +41,7 @@ The workflow does not code-sign or notarize the binaries. Windows may display an
 2. Add a user-facing entry to `CHANGELOG.md`.
 3. Run the tests locally and review the diff.
 4. Commit and push to the default branch. Wait until the full test matrix, including the Python 3.8 jobs and both Windows linker lanes, is green.
-5. Start the dry run: **Actions → CI and Release → Run workflow** on the default branch. All five build jobs must succeed.
+5. Start the dry run: **Actions → CI and Release → Run workflow** on the default branch. All six target builds must succeed.
 6. Create and push an annotated version tag matching the application version, for example:
 
 ```bash

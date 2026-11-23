@@ -24,6 +24,7 @@ VALID_TARGETS = {
     "windows-x86_64",
     "macos-x86_64",
     "macos-arm64",
+    "termux-aarch64",
 }
 
 
@@ -45,6 +46,7 @@ def python_license_path() -> Path:
         Path(sysconfig.get_path("stdlib")) / "LICENSE.txt",
         Path(sys.base_prefix) / "LICENSE.txt",
         Path(sys.base_prefix) / "LICENSE",
+        Path(sysconfig.get_path("data")) / "share" / "doc" / "python" / "LICENSE",
     )
     for candidate in candidates:
         if candidate.is_file():

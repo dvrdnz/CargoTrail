@@ -240,10 +240,87 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-termux-binary:
+    name: Build / termux-aarch64
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [test, test-min-python, windows-linker-tests]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare Termux workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/termux-work/source" "$RUNNER_TEMP/termux-work/release-output"
+          tar -C "$GITHUB_WORKSPACE" --exclude=.git -cf - . | tar -C "$RUNNER_TEMP/termux-work/source" -xf -
+          chmod 0777 "$RUNNER_TEMP/termux-work" "$RUNNER_TEMP/termux-work/release-output"
+      - name: Build and smoke-test in Termux
+        shell: bash
+        run: |
+          docker run --rm -i \
+            --security-opt seccomp=unconfined \
+            --mount "type=bind,src=${RUNNER_TEMP}/termux-work,dst=/data/data/com.termux/files/usr/tmp" \
+            termux/termux-docker:aarch64@sha256:45aedb5a8c0a69fb21d43132c79e6ae4bcd9b4d857213453e98825878cc47d9a \
+            bash -s -- "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" <<'TERMUX'
+          set -euo pipefail
+
+          ref_type="$1"
+          ref_name="$2"
+          server_url="$3"
+          repository="$4"
+
+          pkg update
+          pkg install -y python python-pip clang make rust
+
+          python --version
+          cargo --version
+          rustc --version
+          python -c 'import platform, sys; print("sys.platform:", sys.platform); print("machine:", platform.machine()); assert sys.platform == "android", "Expected Termux Python (sys.platform=android)"; assert platform.machine() == "aarch64", "Expected ARM64 Termux environment"'
+          test -r "$TMPDIR/source/requirements-build.txt"
+          test -w "$TMPDIR/release-output"
+          python -c 'import sysconfig; from pathlib import Path; p = Path(sysconfig.get_path("data")) / "share" / "doc" / "python" / "LICENSE"; print("Python license:", p); assert p.is_file(), "Termux Python license missing: {}".format(p)'
+
+          mkdir -p "$HOME/cargotrail"
+          cp -R "$TMPDIR/source/." "$HOME/cargotrail/"
+          cd "$HOME/cargotrail"
+
+          python -m pip uninstall -y pyinstaller
+          PIP_NO_BINARY=pyinstaller \
+          PIP_NO_CACHE_DIR=1 \
+          PIP_VERBOSE=1 \
+          PYINSTALLER_COMPILE_BOOTLOADER=1 \
+            python scripts/install_build_dependencies.py
+
+          python scripts/build_binary.py --clean
+          ./dist/cargotrail --version
+          python scripts/smoke_test_binary.py
+
+          if [ "$ref_type" = "tag" ]; then
+            version="${ref_name#v}"
+          else
+            version="$(python -c "import sys; sys.path.insert(0, 'scripts'); import package_release; print(package_release.project_version())")"
+          fi
+
+          python scripts/package_release.py \
+            --target termux-aarch64 \
+            --version "$version" \
+            --source-url "${server_url}/${repository}/tree/${ref_name}"
+
+          cp "release/cargotrail-v${version}-termux-aarch64.tar.gz" "$TMPDIR/release-output/"
+          TERMUX
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-termux-aarch64
+          path: ${{ runner.temp }}/termux-work/release-output/*
+          if-no-files-found: error
+          retention-days: 7
+
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-binaries
+    needs: [build-binaries, build-termux-binary]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

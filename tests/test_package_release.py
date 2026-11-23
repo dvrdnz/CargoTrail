@@ -23,10 +23,25 @@ DOCUMENT_NAMES = {"LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "PYTHON-LICE
 
 
 class PythonLicenseDiscoveryTests(unittest.TestCase):
-    def _discover(self, stdlib, base_prefix):
-        with mock.patch.object(package_release, "sysconfig", mock.Mock(get_path=lambda name: str(stdlib))), \
-                mock.patch.object(package_release, "sys", mock.Mock(base_prefix=str(base_prefix))):
-            return package_release.python_license_path()
+    def _discover(self, stdlib, base_prefix, data=None):
+        def get_path(name):
+            if name == "stdlib":
+                return str(stdlib)
+            if name == "data":
+                return str(data if data is not None else base_prefix)
+            raise AssertionError("Unexpected sysconfig path: {}".format(name))
+
+        with mock.patch.object(
+            package_release,
+            "sysconfig",
+            mock.Mock(get_path=get_path),
+        ):
+            with mock.patch.object(
+                package_release,
+                "sys",
+                mock.Mock(base_prefix=str(base_prefix)),
+            ):
+                return package_release.python_license_path()
 
     def test_prefers_the_standard_library_license(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -48,6 +63,19 @@ class PythonLicenseDiscoveryTests(unittest.TestCase):
                 (prefix / name).write_text("prefix", encoding="utf-8")
                 self.assertEqual(self._discover(stdlib, prefix), prefix / name)
 
+    def test_finds_termux_python_license_in_data_prefix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stdlib = Path(temp) / "lib"
+            prefix = Path(temp) / "prefix"
+            data = Path(temp) / "data"
+            stdlib.mkdir()
+            prefix.mkdir()
+            license_file = data / "share" / "doc" / "python" / "LICENSE"
+            license_file.parent.mkdir(parents=True)
+            license_file.write_text("termux", encoding="utf-8")
+
+            self.assertEqual(self._discover(stdlib, prefix, data), license_file)
+
     def test_reports_every_searched_location_when_no_license_exists(self):
         with tempfile.TemporaryDirectory() as temp:
             stdlib = Path(temp) / "lib"
@@ -57,7 +85,12 @@ class PythonLicenseDiscoveryTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError) as caught:
                 self._discover(stdlib, prefix)
             message = str(caught.exception)
-            for searched in (stdlib / "LICENSE.txt", prefix / "LICENSE.txt", prefix / "LICENSE"):
+            for searched in (
+                stdlib / "LICENSE.txt",
+                prefix / "LICENSE.txt",
+                prefix / "LICENSE",
+                prefix / "share" / "doc" / "python" / "LICENSE",
+            ):
                 self.assertIn(str(searched), message)
 
 
@@ -99,6 +132,21 @@ class PackageReleaseArchiveTests(unittest.TestCase):
             with tarfile.open(str(root / "release" / "cargotrail-v9.9.9-linux-x86_64.tar.gz")) as archive:
                 self.assertEqual(set(archive.getnames()), DOCUMENT_NAMES | {"cargotrail"})
                 self.assertEqual(archive.extractfile("PYTHON-LICENSE.txt").read().decode("utf-8"), LICENSE_TEXT)
+
+    def test_termux_archive_contains_the_python_license_and_executable_mode(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, license_file = self._prepare_root(temp, windows=False)
+            status, _ = self._package(root, "termux-aarch64", lambda: license_file)
+            self.assertEqual(status, 0)
+
+            archive_path = root / "release" / "cargotrail-v9.9.9-termux-aarch64.tar.gz"
+            with tarfile.open(str(archive_path)) as archive:
+                self.assertEqual(set(archive.getnames()), DOCUMENT_NAMES | {"cargotrail"})
+                self.assertEqual(archive.getmember("cargotrail").mode, 0o755)
+                self.assertEqual(
+                    archive.extractfile("PYTHON-LICENSE.txt").read().decode("utf-8"),
+                    LICENSE_TEXT,
+                )
 
     def test_zip_archive_contains_the_python_license(self):
         with tempfile.TemporaryDirectory() as temp:
