@@ -61,6 +61,6 @@ The workflow only uploads assets to the draft. Do not delete or move a version t
 
 ## License and source availability
 
-The project source is licensed under the Mozilla Public License 2.0 (MPL-2.0); see the root `LICENSE` file. Release archives include `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `PYTHON-LICENSE.txt`, and `SOURCE-CODE.txt`. The latter points recipients to the exact source tree at the matching Git tag. Keep that tag and its source archive available for as long as the corresponding binaries are distributed. The MPL-2.0 executable-form requirements are described in Section 3.2 of the license.
+The project source is licensed under the Mozilla Public License 2.0 (MPL-2.0); see the root `LICENSE` file. Release archives include `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `PYTHON-LICENSE.txt`, and `SOURCE-CODE.txt`. The latter points recipients to the immutable source tree at the exact Git commit used to build the corresponding binary. The commit permalink remains specific to that source revision, independent of subsequent branch or tag movement. Keep the corresponding release tag and source archive available for as long as the binaries are distributed. The MPL-2.0 executable-form requirements are described in Section 3.2 of the license.
 
 Do not publish a binary until its bundled Python runtime and platform-specific notices have been reviewed. The draft release exists to enforce this. See `THIRD_PARTY_NOTICES.md` for the current dependency inventory and the remaining binary-level notice check.

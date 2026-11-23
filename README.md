@@ -27,13 +27,23 @@ For the source version:
 
 - CPython 3.8 or newer.
 - Rust stable with `cargo` and `rustc` available on `PATH`.
-- Linux, macOS, or Windows 10/11 or a supported Windows Server release.
+- Linux, macOS, Windows 10/11 or a supported Windows Server release, or Termux on AArch64 (Android API 24+).
 
-The included example also uses `cargo fmt` and `cargo clippy`. Install those Rust components if they are not already available:
+The included example also uses `cargo fmt` and `cargo clippy`. Ensure both commands are available.
+
+On Linux, macOS, and Windows with a rustup-managed toolchain, install them with:
 
 ```bash
 rustup component add rustfmt clippy
 ```
+
+On Termux, install the Termux-packaged Rust toolchain instead:
+
+```bash
+pkg install rust
+```
+
+The Termux Rust package includes Cargo, Clippy, and rustfmt. Upstream rustup is not supported on Termux.
 
 The real Cargo integration tests require Rust. Unit and process-supervision tests can be run without it, but CI sets `CARGO_INTEGRATION_REQUIRED=1` so missing Cargo or Rustc fails the job instead of silently skipping integration tests.
 
@@ -151,12 +161,13 @@ See [Contributing](CONTRIBUTING.md) for development and CI details.
 Tagged releases build native, single-file binaries on GitHub Actions for:
 
 - Linux x86-64 and ARM64.
+- Termux AArch64 (Android API 24+).
 - Windows x86-64.
 - macOS Intel x86-64 and Apple Silicon ARM64.
 
-The binaries include the Python runtime and the agent's four source modules needed for runtime provenance. They do **not** include Cargo or Rust; install Rust separately and ensure `cargo` and `rustc` are available when running a pipeline. The Linux builds are produced on Ubuntu 24.04, so older distributions with an older GNU C Library (glibc) may not be compatible.
+The binaries include the Python runtime and the agent's four source modules needed for runtime provenance. They do **not** include Cargo or Rust; install Rust separately and ensure `cargo` and `rustc` are available when running a pipeline. On Termux, install Rust with `pkg install rust`. The Linux builds are produced on Ubuntu 24.04, so older distributions with an older GNU C Library (glibc) may not be compatible.
 
-On Linux and macOS, extract the `.tar.gz` asset and run:
+On Linux, macOS, and Termux, extract the `.tar.gz` asset and run:
 
 ```bash
 chmod +x cargotrail
@@ -169,7 +180,7 @@ On Windows, run the downloaded `.exe` from PowerShell or Command Prompt:
 .\cargotrail.exe --version
 ```
 
-Each binary archive includes `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `PYTHON-LICENSE.txt` (license of the bundled Python runtime), and `SOURCE-CODE.txt` pointing to the exact source tag. The release workflow also publishes `SHA256SUMS.txt`. Verify downloaded assets before use. Binaries are not code-signed or notarized by the default workflow. See [Building and releasing](docs/releasing.md) for local build instructions and the tag-based release process.
+Each binary archive includes `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `PYTHON-LICENSE.txt` (license of the bundled Python runtime), and `SOURCE-CODE.txt` pointing to the exact source commit used to build the binary. The release workflow also publishes `SHA256SUMS.txt`. Verify downloaded assets before use. Binaries are not code-signed or notarized by the default workflow. See [Building and releasing](docs/releasing.md) for local build instructions and the tag-based release process.
 
 ## License
 

@@ -68,7 +68,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, choices=sorted(VALID_TARGETS))
     parser.add_argument("--version", required=True, help="Version without a leading v")
-    parser.add_argument("--source-url", required=True, help="URL of the exact source tree for this release tag")
+    parser.add_argument("--source-url", required=True, help="URL of the exact source commit used to build this executable")
     args = parser.parse_args()
 
     current_version = project_version()

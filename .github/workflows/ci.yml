@@ -232,7 +232,7 @@ jobs:
           else
             version="$(python -c "import sys; sys.path.insert(0, 'scripts'); import package_release; print(package_release.project_version())")"
           fi
-          python scripts/package_release.py --target "${{ matrix.target }}" --version "$version" --source-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}"
+          python scripts/package_release.py --target "${{ matrix.target }}" --version "$version" --source-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}"
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
@@ -262,13 +262,14 @@ jobs:
             --security-opt seccomp=unconfined \
             --mount "type=bind,src=${RUNNER_TEMP}/termux-work,dst=/data/data/com.termux/files/usr/tmp" \
             termux/termux-docker:aarch64@sha256:45aedb5a8c0a69fb21d43132c79e6ae4bcd9b4d857213453e98825878cc47d9a \
-            bash -s -- "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" <<'TERMUX'
+            bash -s -- "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" <<'TERMUX'
           set -euo pipefail
 
           ref_type="$1"
           ref_name="$2"
           server_url="$3"
           repository="$4"
+          commit_sha="$5"
 
           pkg update
           pkg install -y python python-pip clang make rust ldd
@@ -305,7 +306,7 @@ jobs:
           python scripts/package_release.py \
             --target termux-aarch64 \
             --version "$version" \
-            --source-url "${server_url}/${repository}/tree/${ref_name}"
+            --source-url "${server_url}/${repository}/tree/${commit_sha}"
 
           cp "release/cargotrail-v${version}-termux-aarch64.tar.gz" "$TMPDIR/release-output/"
           TERMUX

@@ -20,6 +20,8 @@ SPEC.loader.exec_module(package_release)
 
 LICENSE_TEXT = "PYTHON LICENSE TEXT\n"
 DOCUMENT_NAMES = {"LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "PYTHON-LICENSE.txt", "SOURCE-CODE.txt"}
+SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+SOURCE_URL = "https://example.invalid/tree/" + SOURCE_COMMIT
 
 
 class PythonLicenseDiscoveryTests(unittest.TestCase):
@@ -111,7 +113,7 @@ class PackageReleaseArchiveTests(unittest.TestCase):
     def _package(self, root, target, license_lookup):
         argv = [
             "package_release.py", "--target", target, "--version", "9.9.9",
-            "--source-url", "https://example.invalid/tree/v9.9.9",
+            "--source-url", SOURCE_URL,
         ]
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(package_release, "ROOT", root), \
@@ -158,6 +160,9 @@ class PackageReleaseArchiveTests(unittest.TestCase):
                     archive.extractfile("PYTHON-LICENSE.txt").read().decode("utf-8"),
                     LICENSE_TEXT,
                 )
+                source_notice = archive.extractfile("SOURCE-CODE.txt").read().decode("utf-8")
+                self.assertIn(SOURCE_URL, source_notice)
+                self.assertIn("Release: v9.9.9", source_notice)
 
     def test_zip_archive_contains_the_python_license(self):
         with tempfile.TemporaryDirectory() as temp:
